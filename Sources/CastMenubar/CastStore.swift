@@ -74,6 +74,16 @@ final class CastStore: ObservableObject {
     private var volumeTask: Task<Void, Never>?
     private var lastArtwork: URL?
     private var setupRequestId = 1
+
+    // Timer de sono
+    enum SleepMode: Equatable { case duration, endOfEpisode }
+    @Published private(set) var sleepAt: Date?
+    @Published private(set) var sleepStart: Date?
+    @Published private(set) var sleepMode: SleepMode = .duration
+    @Published private(set) var fading = false
+    private var sleepTask: Task<Void, Never>?
+    private var volumeBeforeFade: Double?
+    private var sleepActivity: NSObjectProtocol?
     private var isPreview = false
     private lazy var nowPlaying = NowPlayingBridge(store: self)
     private var pollCount = 0
@@ -309,7 +319,7 @@ final class CastStore: ObservableObject {
 
     /// Volume com debounce: a UI muda na hora, o aparelho recebe quando o usuário para de arrastar.
     func setVolume(_ level: Double) {
-        let level = (min(max(level, 0), 1) / volumeStep).rounded() * volumeStep
+        let level = fading ? min(max(level, 0), 1) : (min(max(level, 0), 1) / volumeStep).rounded() * volumeStep
         volume = level
         volumeTask?.cancel()
         volumeTask = Task { [weak self] in
@@ -357,6 +367,103 @@ final class CastStore: ObservableObject {
         setVolume(volume + direction * volumeStep)
         HUD.shared.show(symbol: volume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill",
                         title: "\(displayName) · \(Int((volume * 100).rounded()))%", level: volume)
+    }
+
+    // MARK: - Timer de sono
+
+    var sleepActive: Bool { sleepAt != nil }
+    private let fadeDuration: TimeInterval = 60
+
+    func startSleep(minutes: Int) {
+        sleepMode = .duration
+        sleepStart = Date()
+        sleepAt = Date().addingTimeInterval(TimeInterval(minutes * 60))
+        armSleep()
+    }
+
+    /// Para quando o que está tocando acabar (acompanha pausas).
+    func sleepAtEndOfEpisode() {
+        guard let m = media, let d = m.duration else { return }
+        sleepMode = .endOfEpisode
+        sleepStart = Date()
+        sleepAt = Date().addingTimeInterval(max(d - m.position(at: Date()), 1))
+        armSleep()
+    }
+
+    func extendSleep(minutes: Int) {
+        guard let at = sleepAt else { return startSleep(minutes: minutes) }
+        sleepMode = .duration
+        sleepAt = max(at, Date()).addingTimeInterval(TimeInterval(minutes * 60))
+        restoreFadedVolume()
+    }
+
+    func cancelSleep() {
+        sleepTask?.cancel(); sleepTask = nil
+        restoreFadedVolume()
+        sleepAt = nil; sleepStart = nil
+        if let a = sleepActivity { ProcessInfo.processInfo.endActivity(a) }
+        sleepActivity = nil
+    }
+
+    private func armSleep() {
+        sleepTask?.cancel()
+        if sleepActivity == nil, !isPreview {
+            sleepActivity = ProcessInfo.processInfo.beginActivity(options: [.idleSystemSleepDisabled],
+                                                                   reason: "Timer de sono do Chromecast")
+        }
+        sleepTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.sleepTick()
+                try? await Task.sleep(for: .seconds(1))
+            }
+        }
+    }
+
+    private func sleepTick() {
+        guard var at = sleepAt else { return }
+        // transmissão acabou por fora: não há o que desligar
+        if connected, !isCasting { return cancelSleep() }
+        if sleepMode == .endOfEpisode, let m = media, let d = m.duration {
+            at = Date().addingTimeInterval(max(d - m.position(at: Date()), 0))   // pausado = o prazo anda junto
+            sleepAt = at
+        }
+        let left = at.timeIntervalSinceNow
+        if left <= 0 {
+            fireSleep()
+        } else if left <= fadeDuration {
+            if volumeBeforeFade == nil { volumeBeforeFade = volume; fading = true }
+            let target = (volumeBeforeFade ?? volume) * left / fadeDuration
+            if abs(target - volume) >= 0.01 { setVolume(target) }
+        }
+    }
+
+    private func fireSleep() {
+        let original = volumeBeforeFade
+        sleepTask?.cancel(); sleepTask = nil
+        stopCasting()
+        // devolve o volume original depois que o app fecha, pra próxima transmissão não começar muda
+        if let original {
+            Task { [weak self] in
+                try? await Task.sleep(for: .seconds(2))
+                self?.setVolume(original)
+            }
+        }
+        volumeBeforeFade = nil; fading = false
+        sleepAt = nil; sleepStart = nil
+        if let a = sleepActivity { ProcessInfo.processInfo.endActivity(a) }
+        sleepActivity = nil
+    }
+
+    private func restoreFadedVolume() {
+        if let v = volumeBeforeFade { setVolume(v) }
+        volumeBeforeFade = nil
+        fading = false
+    }
+
+    func sleepProgress(at now: Date) -> Double {
+        guard let sleepAt, let sleepStart else { return 0 }
+        let total = sleepAt.timeIntervalSince(sleepStart)
+        return total > 0 ? min(max(now.timeIntervalSince(sleepStart) / total, 0), 1) : 1
     }
 
     // MARK: - API de configuração (canal setup)

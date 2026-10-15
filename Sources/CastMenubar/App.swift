@@ -13,6 +13,9 @@ struct CastMenubarApp: App {
                 if let m = store.media {
                     Image(systemName: m.isPlaying ? "play.fill" : "pause.fill")
                 }
+                if store.sleepActive {
+                    Image(systemName: "moon.zzz.fill")
+                }
             }
         }
         .menuBarExtraStyle(.window)

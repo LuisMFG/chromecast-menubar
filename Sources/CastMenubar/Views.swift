@@ -23,6 +23,7 @@ struct RootView: View {
             }
             if store.connected {
                 VolumeRow(tint: tint)
+                if store.isCasting { SleepRow(tint: tint) }
             }
             Footer()
         }
@@ -345,6 +346,111 @@ private struct VolumeRow: View {
         (new <= 0 || new >= 1) ? Haptics.edge() : Haptics.tick()
         if store.muted { store.toggleMute() }
         store.setVolume(new)
+    }
+}
+
+// MARK: - Timer de sono
+
+private struct SleepRow: View {
+    @EnvironmentObject var store: CastStore
+    let tint: Color
+
+    var body: some View {
+        Group {
+            if let at = store.sleepAt {
+                active(at).transition(.move(edge: .trailing).combined(with: .opacity))
+            } else {
+                picker.transition(.opacity)
+            }
+        }
+        .padding(.horizontal, 12)
+        .frame(height: 44)
+        .background(RoundedRectangle(cornerRadius: 13).fill(.white.opacity(0.05)))
+        .animation(.snappy, value: store.sleepAt == nil)
+    }
+
+    private var picker: some View {
+        HStack(spacing: 4) {
+            Image(systemName: "moon.zzz")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 20)
+            Text("Dormir em")
+                .font(.system(size: 10.5, weight: .medium))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+            Spacer(minLength: 2)
+            ForEach([(15, "15m"), (30, "30m"), (60, "1h")], id: \.0) { m, label in
+                chip(label) { store.startSleep(minutes: m) }
+            }
+            if store.media?.duration != nil {
+                chip(String(localized: "Fim"), width: 36) { store.sleepAtEndOfEpisode() }
+                    .help(String(localized: "Parar quando o episódio acabar"))
+            }
+        }
+    }
+
+    private func chip(_ label: String, width: CGFloat = 32, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(label)
+                .font(.system(size: 10.5, weight: .semibold))
+                .frame(width: width, height: 24)
+                .background(Capsule().fill(.white.opacity(0.08)))
+                .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func active(_ at: Date) -> some View {
+        TimelineView(.periodic(from: .now, by: 1)) { ctx in
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle().stroke(.white.opacity(0.1), lineWidth: 2.5)
+                    Circle()
+                        .trim(from: 0, to: 1 - store.sleepProgress(at: ctx.date))
+                        .stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
+                        .rotationEffect(.degrees(-90))
+                    Image(systemName: "moon.fill")
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(tint)
+                        .symbolEffect(.pulse, options: .repeating, isActive: store.fading)
+                }
+                .frame(width: 24, height: 24)
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(remaining(at.timeIntervalSince(ctx.date)))
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                    Text(store.fading ? String(localized: "Abaixando o volume…")
+                         : store.sleepMode == .endOfEpisode ? String(localized: "No fim do episódio")
+                         : String(localized: "Para às \(at.formatted(date: .omitted, time: .shortened))"))
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button { store.extendSleep(minutes: 15) } label: {
+                    Text("+15m")
+                        .font(.system(size: 10.5, weight: .semibold))
+                        .padding(.horizontal, 8).frame(height: 24)
+                        .background(Capsule().fill(.white.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                Button(action: store.cancelSleep) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 10, weight: .bold))
+                        .frame(width: 24, height: 24)
+                        .background(Circle().fill(.white.opacity(0.08)))
+                }
+                .buttonStyle(.plain)
+                .help(String(localized: "Cancelar timer"))
+            }
+        }
+    }
+
+    private func remaining(_ t: TimeInterval) -> String {
+        let s = max(Int(t.rounded(.up)), 0)
+        return s >= 3600 ? String(format: "%d:%02d:%02d", s / 3600, s / 60 % 60, s % 60)
+                         : String(format: "%d:%02d", s / 60, s % 60)
     }
 }
 
