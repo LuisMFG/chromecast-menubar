@@ -106,6 +106,13 @@ final class CastStore: ObservableObject {
     private var requestId = 1
     private var pollTask: Task<Void, Never>?
     private var reconnectTask: Task<Void, Never>?
+    private var watchdogTask: Task<Void, Never>?
+    private var connectTimeout: Task<Void, Never>?
+    private var attempt = 0
+    private var pathMonitor: NWPathMonitor?
+    private var networkWasDown = false
+    /// Reconectando depois de uma queda (a UI mostra isso em vez de "Desconectado").
+    @Published private(set) var reconnecting = false
     private var volumeTask: Task<Void, Never>?
     private var lastArtwork: URL?
     private var setupRequestId = 1
@@ -144,6 +151,12 @@ final class CastStore: ObservableObject {
         startBrowsing()
         registerHotKeys()
         loadRecents()
+        observeSystem()
+        // se o Bonjour demorar ou falhar, usa o último IP conhecido
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(3))
+            self?.useCachedDeviceIfNeeded()
+        }
         NotificationCenter.default.addObserver(forName: .castFiles, object: nil, queue: .main) { [weak self] n in
             guard let urls = n.object as? [URL], let url = urls.first else { return }
             Task { @MainActor in await self?.cast(url) }
@@ -189,63 +202,158 @@ final class CastStore: ObservableObject {
     }
 
     private func updateDevices(_ found: [CastDevice]) {
-        devices = found.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        var list = found
+        // o Bonjour às vezes "esquece" o aparelho por alguns segundos: não derruba quem já está selecionado
+        if let current = device, !list.contains(where: { $0.id == current.id }) { list.append(current) }
+        devices = list.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         if selectedId == nil || !devices.contains(where: { $0.id == selectedId }) {
             let saved = UserDefaults.standard.string(forKey: "device")
             selectedId = devices.first { $0.id == saved }?.id ?? devices.first?.id
         }
     }
 
+    /// Aparelho montado a partir do último IP que funcionou.
+    private func useCachedDeviceIfNeeded() {
+        guard devices.isEmpty, !isPreview,
+              let ip = UserDefaults.standard.string(forKey: "lastIP"),
+              let id = UserDefaults.standard.string(forKey: "device") else { return }
+        let name = UserDefaults.standard.string(forKey: "lastName") ?? "Chromecast"
+        devices = [CastDevice(id: id, name: name, model: "Chromecast", endpoint: .hostPort(host: NWEndpoint.Host(ip), port: 8009))]
+        selectedId = id
+    }
+
     // MARK: - Conexão
 
+    /// Conecta (ou reconecta) ao aparelho selecionado. Seguro de chamar a qualquer momento.
     func connect() {
         guard !isPreview else { return }
-        reconnectTask?.cancel()
+        reconnectTask?.cancel(); reconnectTask = nil
+        connectTimeout?.cancel()
         pollTask?.cancel()
-        channel?.stop()
+        channel?.stop()          // solta os callbacks antes: a conexão antiga não pode disparar reconexão
         channel = nil
         mediaTransport = nil
+        youtubeTransportAsked = nil
         connected = false
         guard let device else { return }
         UserDefaults.standard.set(device.id, forKey: "device")
+        UserDefaults.standard.set(device.name, forKey: "lastName")
 
-        let ch = CastChannel(endpoint: device.endpoint)
-        ch.onMessage = { [weak self] msg in Task { @MainActor in self?.handle(msg) } }
-        ch.onState = { [weak self] state in Task { @MainActor in self?.channelState(state) } }
-        ch.start()
+        // depois de 2 falhas pelo Bonjour, tenta direto o último IP que funcionou
+        var endpoint = device.endpoint
+        if attempt >= 2, let ip = UserDefaults.standard.string(forKey: "lastIP") {
+            endpoint = .hostPort(host: NWEndpoint.Host(ip), port: 8009)
+        }
+        let ch = CastChannel(endpoint: endpoint)
+        ch.onMessage = { [weak self, weak ch] msg in
+            Task { @MainActor in
+                guard let self, let ch, self.channel === ch else { return }
+                self.handle(msg)
+            }
+        }
+        ch.onState = { [weak self, weak ch] state in
+            Task { @MainActor in
+                guard let self, let ch, self.channel === ch else { return }   // ignora estados de conexões velhas
+                self.channelState(state)
+            }
+        }
         channel = ch
+        ch.start()
+
+        // conexão presa em "preparando" (Wi-Fi do aparelho dormindo, rota quebrada): desiste e tenta de novo
+        connectTimeout = Task { [weak self, weak ch] in
+            try? await Task.sleep(for: .seconds(8))
+            guard !Task.isCancelled, let self, let ch, self.channel === ch, !self.connected else { return }
+            self.dropAndReconnect()
+        }
     }
 
     private func channelState(_ state: NWConnection.State) {
         switch state {
         case .ready:
+            connectTimeout?.cancel()
             connected = true
+            reconnecting = false
+            attempt = 0
             error = nil
+            if let ip = channel?.remoteAddress { UserDefaults.standard.set(ip, forKey: "lastIP") }
             requestStatus()
             requestDeviceInfo()
             startPolling()
-        case .failed:
-            connected = false
-            error = String(localized: "Não consegui falar com o Chromecast. Ele está ligado e na mesma rede?")
-            scheduleReconnect()
-        case .cancelled:
-            connected = false
-            scheduleReconnect()
-        case .waiting:
-            connected = false
-            error = String(localized: "Sem acesso à rede local. Libere o app em Ajustes → Privacidade e Segurança → Rede Local.")
-            scheduleReconnect()
+            startWatchdog()
+        case .failed, .cancelled, .waiting:
+            dropAndReconnect()
         default: break
         }
     }
 
-    private func scheduleReconnect() {
-        reconnectTask?.cancel()
+    /// Marca como caído e agenda nova tentativa com espera crescente (1, 2, 4, 8, 15 s).
+    private func dropAndReconnect(immediately: Bool = false) {
+        channel?.stop()
+        channel = nil
+        connected = false
+        pollTask?.cancel()
+        watchdogTask?.cancel()
+        guard device != nil else { return }
+        reconnecting = true
+        if attempt >= 4 {
+            error = String(localized: "Não consegui falar com o Chromecast. Ele está ligado e na mesma rede?")
+        }
+        guard reconnectTask == nil else { return }       // não empilha tentativas
+        let delay = immediately ? 0.2 : min(pow(2, Double(attempt)), 15) * Double.random(in: 0.8...1.2)
+        attempt += 1
         reconnectTask = Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
+            try? await Task.sleep(for: .seconds(delay))
             guard !Task.isCancelled else { return }
+            self?.reconnectTask = nil
             self?.connect()
         }
+    }
+
+    /// Botão "Tentar agora": zera a espera.
+    func reconnectNow() {
+        attempt = 0
+        reconnectTask?.cancel(); reconnectTask = nil
+        connect()
+    }
+
+    /// Conexão "zumbi": o aparelho responde o heartbeat a cada 5 s; 15 s de silêncio = caiu.
+    private func startWatchdog() {
+        watchdogTask?.cancel()
+        watchdogTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(5))
+                guard let self, self.connected, let ch = self.channel else { continue }
+                if ch.silence > 15 {
+                    self.attempt = 0
+                    self.dropAndReconnect(immediately: true)
+                }
+            }
+        }
+    }
+
+    /// Mac acordou ou a rede voltou/mudou: a conexão antiga quase sempre morreu, reconecta na hora.
+    private func observeSystem() {
+        NSWorkspace.shared.notificationCenter.addObserver(forName: NSWorkspace.didWakeNotification, object: nil, queue: .main) { [weak self] _ in
+            Task { @MainActor in
+                self?.attempt = 0
+                self?.dropAndReconnect(immediately: true)
+            }
+        }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            Task { @MainActor in
+                guard let self else { return }
+                if path.status != .satisfied { self.networkWasDown = true; return }
+                if self.networkWasDown {
+                    self.networkWasDown = false
+                    self.attempt = 0
+                    self.dropAndReconnect(immediately: true)
+                }
+            }
+        }
+        monitor.start(queue: .main)
+        pathMonitor = monitor
     }
 
     private func startPolling() {

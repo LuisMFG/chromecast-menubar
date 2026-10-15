@@ -173,7 +173,9 @@ private struct Header: View {
     @State private var confirmReboot = false
 
     private var status: String {
-        guard store.connected else { return String(localized: "Desconectado") }
+        guard store.connected else {
+            return store.reconnecting ? String(localized: "Reconectando…") : String(localized: "Conectando…")
+        }
         if store.dashboardOn { return String(localized: "Mostrando o painel da casa") }
         guard let app = store.app else { return String(localized: "Pronto") }
         if app.isIdle { return String(localized: "Pronto para transmitir") }
@@ -204,6 +206,7 @@ private struct Header: View {
                 HStack(spacing: 5) {
                     Circle()
                         .fill(store.connected ? (store.isCasting ? tint : .green) : .orange)
+                        .opacity(store.connected ? 1 : 0.8)
                         .frame(width: 6, height: 6)
                     Text(status).lineLimit(1)
                 }
@@ -230,7 +233,7 @@ private struct Header: View {
                 Divider()
                 Button("Renomear…") { newName = store.displayName; renaming = true }
                 Button("Reiniciar Chromecast…") { confirmReboot = true }
-                Button("Reconectar") { store.connect() }
+                Button("Reconectar") { store.reconnectNow() }
                 if !store.recents.isEmpty { Button("Limpar recentes") { store.clearRecents() } }
                 Divider()
                 Button("Fechar app") { NSApp.terminate(nil) }.keyboardShortcut("q")
@@ -688,7 +691,9 @@ private struct Searching: View {
     var body: some View {
         VStack(spacing: 10) {
             ProgressView().controlSize(.small)
-            Text(store.devices.isEmpty ? String(localized: "Procurando Chromecast na rede…") : String(localized: "Conectando…"))
+            Text(store.devices.isEmpty ? String(localized: "Procurando Chromecast na rede…")
+                 : store.reconnecting ? String(localized: "Reconectando ao \(store.displayName)…")
+                 : String(localized: "Conectando ao \(store.displayName)…"))
                 .font(.system(size: 12, weight: .medium))
             if let e = store.error {
                 Text(e).font(.system(size: 11)).foregroundStyle(.orange)
@@ -697,6 +702,16 @@ private struct Searching: View {
                 Text("Se nada aparecer, libere o app em Ajustes do Sistema → Privacidade e Segurança → Rede Local.")
                     .font(.system(size: 10.5)).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+            if !store.devices.isEmpty {
+                Button(action: store.reconnectNow) {
+                    Label("Tentar agora", systemImage: "arrow.clockwise")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 12).frame(height: 26)
+                        .background(Capsule().fill(.white.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
+                .padding(.top, 2)
             }
         }
         .frame(maxWidth: .infinity, minHeight: 160)

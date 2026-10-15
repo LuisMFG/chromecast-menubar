@@ -92,6 +92,8 @@ final class CastChannel: @unchecked Sendable {
     private let queue = DispatchQueue(label: "cast.channel")
     private var buffer = Data()
     private var heartbeat: DispatchSourceTimer?
+    /// Última vez que chegou qualquer coisa do aparelho (inclui PONG). Lido de outra thread: protegido pela fila.
+    private var lastReceived = Date()
 
     init(endpoint: NWEndpoint) {
         self.endpoint = endpoint
@@ -114,6 +116,7 @@ final class CastChannel: @unchecked Sendable {
         c.stateUpdateHandler = { [weak self] state in
             guard let self else { return }
             if case .ready = state {
+                self.lastReceived = Date()
                 self.send(to: "receiver-0", ns: CastNS.connection, ["type": "CONNECT"])
                 self.startHeartbeat()
                 self.receive()
@@ -133,10 +136,24 @@ final class CastChannel: @unchecked Sendable {
         }
     }
 
+    /// IP do Chromecast nesta conexão (guardado pra reconectar mesmo se o Bonjour falhar).
+    var remoteAddress: String? {
+        guard case let .hostPort(host, _)? = connection?.currentPath?.remoteEndpoint, case .ipv4(let a) = host else { return nil }
+        return "\(a)"
+    }
+
+    /// Há quantos segundos o aparelho não manda nada. O heartbeat garante resposta a cada 5 s numa conexão viva.
+    var silence: TimeInterval { queue.sync { Date().timeIntervalSince(lastReceived) } }
+
+    /// Encerra de vez: solta os callbacks ANTES de cancelar, pra que o "cancelado" desta conexão
+    /// antiga nunca seja confundido com uma queda da conexão nova.
     func stop() {
+        onState = nil
+        onMessage = nil
         heartbeat?.cancel(); heartbeat = nil
+        connection?.stateUpdateHandler = nil
         connection?.cancel(); connection = nil
-        buffer.removeAll()
+        queue.async { self.buffer.removeAll() }
     }
 
     func send(to destination: String, ns: String, _ payload: [String: Any]) {
@@ -161,7 +178,7 @@ final class CastChannel: @unchecked Sendable {
     private func receive() {
         connection?.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] data, _, done, error in
             guard let self else { return }
-            if let data { self.buffer.append(data); self.drain() }
+            if let data, !data.isEmpty { self.lastReceived = Date(); self.buffer.append(data); self.drain() }
             if done || error != nil { self.onState?(.cancelled); return }
             self.receive()
         }
