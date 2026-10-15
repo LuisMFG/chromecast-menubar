@@ -33,6 +33,17 @@ final class BrowserWatcher {
         }
     }
 
+    /// Nome que o yt-dlp entende para `--cookies-from-browser` (Arc não é suportado: usa o Chrome).
+    var ytdlpBrowserName: String {
+        switch lastBrowser {
+        case "com.apple.Safari": "safari"
+        case "com.google.Chrome", "company.thebrowser.Browser": "chrome"
+        case "com.microsoft.edgemac": "edge"
+        case "com.vivaldi.Vivaldi": "vivaldi"
+        default: "brave"
+        }
+    }
+
     /// Lê a aba ativa. Na primeira vez o macOS pergunta se o app pode controlar o navegador.
     func activeTab() async -> BrowserTab? {
         let running = Set(NSWorkspace.shared.runningApplications.compactMap(\.bundleIdentifier))

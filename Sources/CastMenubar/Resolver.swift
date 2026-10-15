@@ -14,7 +14,10 @@ enum Resolver {
                       "max.com": "Max", "globoplay.globo.com": "Globoplay", "tv.apple.com": "Apple TV+",
                       "paramountplus.com": "Paramount+", "crunchyroll.com": "Crunchyroll"]
 
-    static func resolve(_ url: URL) async -> CastTarget {
+    /// Sites que costumam exigir login (yt-dlp usa a sessão do navegador se o usuário permitir).
+    static let loginSites = ["instagram.com", "x.com", "twitter.com"]
+
+    static func resolve(_ url: URL, cookiesFrom browser: String? = nil) async -> CastTarget {
         let host = url.host?.lowercased() ?? ""
         if url.isFileURL { return .media(url: url, mime: MediaServer.mime(for: url), title: url.deletingPathExtension().lastPathComponent, image: nil) }
         if let yt = YouTubeLink(url) { return .youtube(yt) }
@@ -32,9 +35,10 @@ enum Resolver {
             return .media(url: url, mime: type, title: url.lastPathComponent, image: nil)
         }
         // página: procura vídeo nas metatags (og:video, twitter:player:stream, <video src>)
-        if let found = await pageMedia(url) { return found }
+        let social = loginSites.contains { host == $0 || host.hasSuffix("." + $0) }
+        if !social, let found = await pageMedia(url) { return found }
         // yt-dlp, se instalado, cobre centenas de sites (Twitch, X, Instagram, Vimeo, SoundCloud…)
-        if let found = await ytdlp(url) { return found }
+        if let found = await ytdlp(url, cookiesFrom: browser) { return found }
         return .unsupported(YTDLP.path == nil
             ? String(localized: "Não achei vídeo nessa página. Com o yt-dlp instalado, centenas de sites passam a funcionar.")
             : String(localized: "Não achei vídeo compatível nessa página."))
@@ -80,10 +84,20 @@ enum Resolver {
         return nil
     }
 
-    private static func ytdlp(_ url: URL) async -> CastTarget? {
+    private static func ytdlp(_ url: URL, cookiesFrom browser: String?) async -> CastTarget? {
         guard let path = YTDLP.path else { return nil }
-        let (out, failure) = await run(path, args(for: url), timeout: 40)
+        let host = url.host?.lowercased() ?? ""
+        let needsLogin = loginSites.contains { host == $0 || host.hasSuffix("." + $0) }
+        var arguments = args(for: url)
+        if needsLogin, let browser { arguments.insert(contentsOf: ["--cookies-from-browser", browser], at: 0) }
+        let (out, failure) = await run(path, arguments, timeout: 45)
         if let failure {
+            let loginProblem = ["login", "cookies", "empty media", "rate-limit", "not available"].contains { failure.lowercased().contains($0) }
+            if needsLogin, loginProblem {
+                return .unsupported(browser == nil
+                    ? String(localized: "Esse post pede login. Ative ⋯ → “Usar login do navegador” para o app usar a sua sessão do Instagram/X.")
+                    : String(localized: "Mesmo com o login do navegador o post não abriu — confira se ele abre no navegador."))
+            }
             return .unsupported(String(localized: "O yt-dlp não conseguiu ler este site: \(failure.prefix(140)). Às vezes resolve atualizando: brew upgrade yt-dlp"))
         }
         guard let out,

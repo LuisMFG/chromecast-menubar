@@ -5,6 +5,58 @@ private let defaultTint = Color(red: 0.56, green: 0.56, blue: 1.0)
 private let panelWidth: CGFloat = 340
 private let inner: CGFloat = panelWidth - 32
 
+// MARK: - Serviços
+
+/// Ícone e cor de cada serviço (pela URL ou pelo app aberto na TV).
+struct Service {
+    let name: String
+    let symbol: String
+    let fill: AnyShapeStyle
+
+    static func from(url: URL?) -> Service {
+        let host = url?.host?.lowercased() ?? ""
+        if let url, YouTubeLink(url) != nil { return .youtube }
+        if host.hasSuffix("spotify.com") || url?.scheme == "spotify" { return .spotify }
+        if host.hasSuffix("instagram.com") { return .instagram }
+        if host == "x.com" || host.hasSuffix(".x.com") || host.hasSuffix("twitter.com") { return .x }
+        if url?.isFileURL == true { return .file }
+        return .web
+    }
+
+    static func from(appId: String?, name: String) -> Service {
+        switch appId {
+        case CastStore.youtubeApp: .youtube
+        case CastStore.spotifyApp: .spotify
+        case CastStore.defaultReceiver: Service(name: String(localized: "Do Mac"), symbol: "laptopcomputer", fill: AnyShapeStyle(Color.white.opacity(0.15)))
+        default: Service(name: name, symbol: "play.tv", fill: AnyShapeStyle(Color.white.opacity(0.15)))
+        }
+    }
+
+    static let youtube = Service(name: "YouTube", symbol: "play.fill", fill: AnyShapeStyle(Color(red: 1, green: 0.16, blue: 0.16)))
+    static let spotify = Service(name: "Spotify", symbol: "music.note", fill: AnyShapeStyle(Color(red: 0.12, green: 0.84, blue: 0.38)))
+    static let instagram = Service(name: "Instagram", symbol: "camera", fill: AnyShapeStyle(LinearGradient(
+        colors: [Color(red: 0.98, green: 0.76, blue: 0.2), Color(red: 0.93, green: 0.18, blue: 0.45), Color(red: 0.55, green: 0.24, blue: 0.85)],
+        startPoint: .bottomLeading, endPoint: .topTrailing)))
+    static let x = Service(name: "X", symbol: "xmark", fill: AnyShapeStyle(Color.black))
+    static let file = Service(name: String(localized: "Arquivo"), symbol: "doc.fill", fill: AnyShapeStyle(Color.white.opacity(0.15)))
+    static let web = Service(name: "Web", symbol: "globe", fill: AnyShapeStyle(Color.white.opacity(0.15)))
+}
+
+private struct ServiceIcon: View {
+    let service: Service
+    var size: CGFloat = 30
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: size * 0.26, style: .continuous).fill(service.fill)
+            RoundedRectangle(cornerRadius: size * 0.26, style: .continuous).stroke(.white.opacity(0.12))
+            Image(systemName: service.symbol)
+                .font(.system(size: size * 0.38, weight: .bold))
+                .foregroundStyle(.white)
+        }
+        .frame(width: size, height: size)
+    }
+}
+
 // MARK: - Raiz
 
 struct RootView: View {
@@ -174,6 +226,7 @@ private struct Header: View {
 
             Menu {
                 Button("Transmitir arquivo…") { pickFile() }
+                Toggle("Usar login do navegador (Instagram e X)", isOn: $store.useBrowserLogin)
                 Divider()
                 Button("Renomear…") { newName = store.displayName; renaming = true }
                 Button("Reiniciar Chromecast…") { confirmReboot = true }
@@ -322,18 +375,9 @@ private struct BrowserTabRow: View {
     let tab: BrowserTab
     let tint: Color
 
-    private var isYouTube: Bool { YouTubeLink(tab.url) != nil }
-
     var body: some View {
         HStack(spacing: 10) {
-            ZStack {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .fill(isYouTube ? Color.red.opacity(0.9) : .white.opacity(0.1))
-                Image(systemName: isYouTube ? "play.fill" : "globe")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white)
-            }
-            .frame(width: 30, height: 30)
+            ServiceIcon(service: .from(url: tab.url))
 
             VStack(alignment: .leading, spacing: 1) {
                 Text("Aba do \(tab.browser)")
@@ -367,15 +411,13 @@ private struct NowPlayingCard: View {
     let tint: Color
 
     private var appName: String { store.app?.name ?? "" }
-    private var isYouTube: Bool { store.app?.appId == CastStore.youtubeApp }
     private var isImage: Bool { media.duration == nil && !media.canSeek && media.playerState == "PAUSED" }
 
     var body: some View {
         VStack(spacing: 12) {
             ZStack(alignment: .topLeading) {
                 Artwork(url: media.artwork, tint: tint)
-                AppBadge(name: isYouTube ? "YouTube" : appName == "Default Media Receiver" ? String(localized: "Do Mac") : appName,
-                         youtube: isYouTube)
+                AppBadge(service: .from(appId: store.app?.appId, name: appName))
                     .padding(10)
             }
 
@@ -425,17 +467,14 @@ private struct NowPlayingCard: View {
 }
 
 private struct AppBadge: View {
-    let name: String
-    let youtube: Bool
+    let service: Service
     var body: some View {
-        HStack(spacing: 5) {
-            if youtube {
-                Image(systemName: "play.rectangle.fill").foregroundStyle(.red)
-            }
-            Text(name).lineLimit(1)
+        HStack(spacing: 6) {
+            ServiceIcon(service: service, size: 16)
+            Text(service.name).lineLimit(1)
         }
         .font(.system(size: 10.5, weight: .bold))
-        .padding(.horizontal, 8).frame(height: 22)
+        .padding(.leading, 4).padding(.trailing, 9).frame(height: 24)
         .background(Capsule().fill(.black.opacity(0.55)))
         .overlay(Capsule().stroke(.white.opacity(0.12)))
     }
@@ -611,16 +650,18 @@ private struct RecentRow: View {
             if let url = URL(string: item.url) { Task { await store.cast(url, title: item.title) } }
         } label: {
             HStack(spacing: 10) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.white.opacity(0.08))
-                    Image(systemName: item.kind == "youtube" ? "play.rectangle.fill" : item.kind == "file" ? "doc.fill" : "link")
-                        .font(.system(size: 11)).foregroundStyle(item.kind == "youtube" ? .red : .secondary)
-                    if let s = item.image, let u = URL(string: s) {
-                        AsyncImage(url: u) { p in p.image?.resizable().aspectRatio(contentMode: .fill) }
+                ZStack(alignment: .bottomTrailing) {
+                    ZStack {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.white.opacity(0.08))
+                        if let s = item.image, let u = URL(string: s) {
+                            AsyncImage(url: u) { p in p.image?.resizable().aspectRatio(contentMode: .fill) }
+                        }
                     }
+                    .frame(width: 52, height: 30)
+                    .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+                    ServiceIcon(service: .from(url: URL(string: item.url)), size: 15)
+                        .offset(x: 4, y: 4)
                 }
-                .frame(width: 52, height: 30)
-                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
                 VStack(alignment: .leading, spacing: 1) {
                     Text(item.title).font(.system(size: 12, weight: .medium)).lineLimit(1)

@@ -30,14 +30,17 @@ import SwiftUI
                              title: "Tiny Desk Concert — NPR Music", url: URL(string: "https://www.youtube.com/watch?v=abcdefghijk")!)
         let now = Date()
         let recents = [
-            RecentCast(url: "https://youtu.be/a", title: "Lofi hip hop radio — beats to relax/study to", kind: "youtube", image: nil, date: now.addingTimeInterval(-3600)),
-            RecentCast(url: "file:///f.mp4", title: "Férias 2025", kind: "file", image: nil, date: now.addingTimeInterval(-86400)),
-            RecentCast(url: "https://vimeo.com/1", title: "The Mountain — timelapse", kind: "media", image: nil, date: now.addingTimeInterval(-3 * 86400)),
+            RecentCast(url: "https://youtu.be/abcdefghijk", title: "Lofi hip hop radio — beats to relax/study to", kind: "youtube", image: nil, date: now.addingTimeInterval(-3600)),
+            RecentCast(url: "https://open.spotify.com/album/1", title: "Random Access Memories", kind: "media", image: nil, date: now.addingTimeInterval(-7200)),
+            RecentCast(url: "https://www.instagram.com/reel/abc/", title: "Reel de @natgeo", kind: "media", image: nil, date: now.addingTimeInterval(-86400)),
+            RecentCast(url: "https://x.com/nasa/status/1", title: "NASA — lançamento ao vivo", kind: "media", image: nil, date: now.addingTimeInterval(-3 * 86400)),
         ]
         let playing = CastStore(preview: yt, media: media, volume: 0.65,
                                 tint: Color(hue: 0.08, saturation: 0.6, brightness: 0.95), tab: tab)
         write(RootView().environmentObject(playing), "\(out)/playing.png")
-        write(RootView().environmentObject(CastStore(preview: backdrop, media: nil, volume: 0.8, tab: tab, recents: recents)), "\(out)/idle.png")
+        let xtab = BrowserTab(browser: "Brave", bundleId: "com.brave.Browser", title: "NASA no X: \"Lançamento do Artemis\"",
+                              url: URL(string: "https://x.com/nasa/status/1")!)
+        write(RootView().environmentObject(CastStore(preview: backdrop, media: nil, volume: 0.8, tab: xtab, recents: recents)), "\(out)/idle.png")
         let spotify = CastStore(preview: backdrop, media: nil, volume: 0.8, tab: nil, recents: [])
         spotify.notice = "Abri no Spotify. Lá, toque em “Conectar a um dispositivo” e escolha Sala — o Spotify só transmite pelo próprio app."
         write(RootView().environmentObject(spotify), "\(out)/notice.png")

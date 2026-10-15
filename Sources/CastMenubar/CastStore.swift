@@ -92,6 +92,10 @@ final class CastStore: ObservableObject {
     }
     private var noticeClear: Task<Void, Never>?
     @Published var browserTab: BrowserTab?
+    /// Deixa o yt-dlp usar a sessão do navegador (Instagram/X). Desligado por padrão.
+    @Published var useBrowserLogin = UserDefaults.standard.bool(forKey: "useBrowserLogin") {
+        didSet { UserDefaults.standard.set(useBrowserLogin, forKey: "useBrowserLogin") }
+    }
     @Published private(set) var recents: [RecentCast] = []
     @Published private(set) var dashboardOn = false
     @Published private(set) var dashboardPreview: NSImage?
@@ -113,6 +117,7 @@ final class CastStore: ObservableObject {
     static let dashboardTitle = "Chromecast — painel"
     static let defaultReceiver = "CC1AD845"
     static let youtubeApp = "233637DE"
+    static let spotifyApp = "CC32E753"
     private var pendingYouTube: YouTubeLink?
     private var youtubeTransportAsked: String?
     private let lounge = YouTubeLounge()
@@ -456,7 +461,8 @@ final class CastStore: ObservableObject {
         guard connected else { error = String(localized: "Chromecast desconectado"); return }
         notice = nil
         if !url.isFileURL, YouTubeLink(url) == nil { castProgress = String(localized: "Procurando o vídeo…") }
-        switch await Resolver.resolve(url) {
+        let cookies = useBrowserLogin ? tabs.ytdlpBrowserName : nil
+        switch await Resolver.resolve(url, cookiesFrom: cookies) {
         case .youtube(let link):
             castYouTube(link)
             remember(url: url, title: title ?? String(localized: "Vídeo do YouTube"), kind: "youtube",
@@ -469,6 +475,7 @@ final class CastStore: ObservableObject {
         case .spotify(let link):
             castProgress = nil
             openInSpotify(link)
+            remember(url: link, title: title ?? String(localized: "Spotify"), kind: "spotify", image: nil)
         case .unsupported(let message):
             castProgress = nil
             notice = message
@@ -498,14 +505,22 @@ final class CastStore: ObservableObject {
             .replacingOccurrences(of: #"\s[-–|]\s(YouTube|YouTube Music|Vimeo|Twitch)$"#, with: "", options: .regularExpression)
     }
 
+    /// Spotify não aceita controle de fora: manda o app do Spotify no Mac tocar o link via Spotify Connect.
+    /// Se a TV já for o dispositivo ativo do Spotify, já sai nela.
     private func openInSpotify(_ url: URL) {
-        // open.spotify.com/track/ID → spotify:track:ID
-        var target = url
+        var uri = url.absoluteString
         let parts = url.pathComponents.filter { $0 != "/" && !$0.hasPrefix("intl-") }
-        if url.host?.hasSuffix("spotify.com") == true, parts.count >= 2,
-           let uri = URL(string: "spotify:\(parts[0]):\(parts[1])") { target = uri }
-        NSWorkspace.shared.open(target)
-        notice = String(localized: "Abri no Spotify. Lá, toque em “Conectar a um dispositivo” e escolha \(displayName) — o Spotify só transmite pelo próprio app.")
+        if url.host?.hasSuffix("spotify.com") == true, parts.count >= 2 { uri = "spotify:\(parts[0]):\(parts[1])" }
+        guard NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.spotify.client") != nil else {
+            NSWorkspace.shared.open(url)
+            notice = String(localized: "Abri no navegador. Instale o app do Spotify para transmitir para a TV.")
+            return
+        }
+        let script = "tell application id \"com.spotify.client\" to play track \"\(uri)\""
+        DispatchQueue.global().async { var e: NSDictionary?; _ = NSAppleScript(source: script)?.executeAndReturnError(&e) }
+        notice = app?.appId == Self.spotifyApp
+            ? String(localized: "Tocando no Spotify da TV.")
+            : String(localized: "Tocando no Spotify. Se não sair na TV, no app do Spotify toque em “Conectar a um dispositivo” e escolha \(displayName) — é só uma vez.")
     }
 
     // MARK: Recentes
