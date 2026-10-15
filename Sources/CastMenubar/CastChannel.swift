@@ -130,16 +130,22 @@ final class CastChannel: @unchecked Sendable {
     var localAddress: String? {
         guard case let .hostPort(host, _)? = connection?.currentPath?.localEndpoint else { return nil }
         switch host {
-        case .ipv4(let a): return "\(a)"
+        case .ipv4(let a): return Self.plain(a)
         case .name(let n, _): return n
         default: return nil
         }
     }
 
+    /// "192.168.1.10%en0" → "192.168.1.10". Pela conexão Bonjour o endereço vem com a interface,
+    /// que não serve em URL nem pra abrir o UDP do espelhamento.
+    static func plain(_ a: IPv4Address) -> String {
+        String("\(a)".split(separator: "%").first ?? "")
+    }
+
     /// IP do Chromecast nesta conexão (guardado pra reconectar mesmo se o Bonjour falhar).
     var remoteAddress: String? {
         guard case let .hostPort(host, _)? = connection?.currentPath?.remoteEndpoint, case .ipv4(let a) = host else { return nil }
-        return "\(a)"
+        return Self.plain(a)
     }
 
     /// Há quantos segundos o aparelho não manda nada. O heartbeat garante resposta a cada 5 s numa conexão viva.

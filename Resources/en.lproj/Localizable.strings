@@ -73,6 +73,13 @@
 "Dica: arraste um arquivo ou link pra cá, ou use ⌃⌥T no navegador." = "Tip: drop a file or link here, or press ⌃⌥T in your browser.";
 
 /* Espelhar */
+"Libere o app em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema. Depois use “Reabrir app” — o macOS só aplica a permissão quando o app reabre." = "Allow the app in System Settings → Privacy & Security → Screen & System Audio Recording, then use “Relaunch app” — macOS only applies the permission after the app restarts.";
+"Não consegui capturar a tela. Se você acabou de liberar a Gravação de Tela, use “Reabrir app”." = "Couldn't capture the screen. If you just allowed Screen Recording, use “Relaunch app”.";
+"Abrindo o espelhamento na TV…" = "Opening mirroring on the TV…";
+"Começando a enviar a tela…" = "Starting to send the screen…";
+"Abrir Ajustes" = "Open Settings";
+"Reabrir app" = "Relaunch app";
+"Demorou demais para responder" = "It took too long to respond";
 "Modo instantâneo — quase sem atraso." = "Instant mode — almost no delay.";
 "Modo compatível — alguns segundos de atraso." = "Compatibility mode — a few seconds behind.";
 "O som continua saindo do Mac, em sincronia com a TV." = "Sound keeps playing on the Mac, in sync with the TV.";

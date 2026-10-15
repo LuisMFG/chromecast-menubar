@@ -286,6 +286,17 @@ private struct Banners: View {
             if let n = store.notice {
                 banner(icon: "info.circle.fill", text: n, color: tint) { store.notice = nil }
             }
+            if store.needsRelaunchForScreen {
+                HStack(spacing: 8) {
+                    Button("Abrir Ajustes") {
+                        NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!)
+                    }
+                    Button("Reabrir app", action: store.relaunchApp)
+                        .buttonStyle(.borderedProminent)
+                }
+                .controlSize(.small)
+                .frame(maxWidth: .infinity, alignment: .trailing)
+            }
             if let e = store.error, store.connected {
                 banner(icon: "exclamationmark.triangle.fill", text: e, color: .orange) { store.error = nil }
             }

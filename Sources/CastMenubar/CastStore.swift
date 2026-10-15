@@ -3,6 +3,9 @@ import Foundation
 import Network
 import SwiftUI
 import Carbon.HIToolbox
+import os
+
+let log = Logger(subsystem: "dev.local.CastMenubar", category: "cast")
 
 struct CastDevice: Identifiable, Hashable {
     let id: String          // nome do serviço Bonjour
@@ -233,7 +236,7 @@ final class CastStore: ObservableObject {
     /// Aparelho montado a partir do último IP que funcionou.
     private func useCachedDeviceIfNeeded() {
         guard devices.isEmpty, !isPreview,
-              let ip = UserDefaults.standard.string(forKey: "lastIP"),
+              let ip = UserDefaults.standard.string(forKey: "lastIP")?.split(separator: "%").first.map(String.init),
               let id = UserDefaults.standard.string(forKey: "device") else { return }
         let name = UserDefaults.standard.string(forKey: "lastName") ?? "Chromecast"
         devices = [CastDevice(id: id, name: name, model: "Chromecast", endpoint: .hostPort(host: NWEndpoint.Host(ip), port: 8009))]
@@ -259,7 +262,7 @@ final class CastStore: ObservableObject {
 
         // depois de 2 falhas pelo Bonjour, tenta direto o último IP que funcionou
         var endpoint = device.endpoint
-        if attempt >= 2, let ip = UserDefaults.standard.string(forKey: "lastIP") {
+        if attempt >= 2, let ip = UserDefaults.standard.string(forKey: "lastIP")?.split(separator: "%").first.map(String.init) {
             endpoint = .hostPort(host: NWEndpoint.Host(ip), port: 8009)
         }
         let ch = CastChannel(endpoint: endpoint)
@@ -475,6 +478,7 @@ final class CastStore: ObservableObject {
                 mirrorShown = true
                 send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
                 channel?.send(to: newApp.transportId, ns: CastStreamer.namespace, st.offer(seqNum: Int.random(in: 1...100_000)))
+                log.notice("mirror: OFFER enviado (\(st.width)x\(st.height) h264)")
             } else if mirrorShown, newApp.appId != CastStreamer.receiverApp {
                 endMirroring()      // outra coisa assumiu a TV
             }
@@ -517,7 +521,8 @@ final class CastStore: ObservableObject {
             if new.title == Self.dashboardTitle { dashboardShown = true }
             else if dashboardShown, new.title != nil { endDashboard() }
         }
-        if mirroring {
+        // só no modo HLS o título identifica o espelhamento; o receptor instantâneo chama de "Chrome tab casting"
+        if mirroring, !mirrorInstant {
             if new.title == Self.mirrorTitle { mirrorShown = true }
             else if mirrorShown, new.title != nil { endMirroring() }
         }
@@ -824,17 +829,28 @@ final class CastStore: ObservableObject {
 
     // MARK: - Espelhar a tela
 
+    /// Gravação de Tela liberada, mas o macOS só aplica depois que o app reabre.
+    @Published private(set) var needsRelaunchForScreen = false
+
     /// Espelha a tela: primeiro o modo instantâneo (Cast Streaming, ~0,2 s); se o aparelho recusar, HLS (~4 s).
     func startMirroring() async {
         guard connected, !mirroring else { return }
-        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
-            notice = String(localized: "Libere o app em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema, e tente de novo.")
+        notice = nil
+        // diagnóstico: CAST_TEST_PATTERN=1 troca a tela por um padrão animado (não precisa de permissão)
+        let testPattern = ProcessInfo.processInfo.environment["CAST_TEST_PATTERN"] != nil
+        guard testPattern || CGPreflightScreenCaptureAccess() else {
+            log.notice("mirror: sem permissão de gravação de tela, pedindo")
+            _ = CGRequestScreenCaptureAccess()
+            needsRelaunchForScreen = true
+            notice = String(localized: "Libere o app em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema. Depois use “Reabrir app” — o macOS só aplica a permissão quando o app reabre.")
             return
         }
+        needsRelaunchForScreen = false
         if dashboardOn { endDashboard() }
         let st = CastStreamer()
         st.onError = { [weak self] message in
             Task { @MainActor in
+                log.error("mirror: captura parou: \(message, privacy: .public)")
                 self?.error = String(localized: "Espelhamento parou: \(message)")
                 self?.stopMirroring()
             }
@@ -844,30 +860,49 @@ final class CastStore: ObservableObject {
         mirroring = true
         mirrorInstant = true
         mirrorShown = false
-        castProgress = String(localized: "Preparando o espelhamento…")
+        castProgress = String(localized: "Abrindo o espelhamento na TV…")
+        log.notice("mirror: LAUNCH \(CastStreamer.receiverApp, privacy: .public)")
         send(to: "receiver-0", ns: CastNS.receiver, ["type": "LAUNCH", "appId": CastStreamer.receiverApp])
-        // sem resposta em 10 s: tenta o modo compatível
+        // cada etapa tem prazo: nada de "carregando" pra sempre
         Task { [weak self] in
-            try? await Task.sleep(for: .seconds(10))
+            try? await Task.sleep(for: .seconds(12))
             guard let self, self.mirroring, self.mirrorInstant, self.castProgress != nil else { return }
+            log.error("mirror: sem resposta do receptor em 12 s (oferta enviada: \(self.streamerOffered))")
             self.fallbackToHLS()
+        }
+    }
+
+    func relaunchApp() {
+        let url = Bundle.main.bundleURL
+        let config = NSWorkspace.OpenConfiguration()
+        config.createsNewApplicationInstance = true
+        NSWorkspace.shared.openApplication(at: url, configuration: config) { _, _ in
+            DispatchQueue.main.async { NSApp.terminate(nil) }
         }
     }
 
     private func streamingMessage(_ type: String, _ obj: [String: Any]) {
         guard type == "ANSWER", mirroring, mirrorInstant, let st = streamer else { return }
+        let host = channel?.remoteAddress
+            ?? UserDefaults.standard.string(forKey: "lastIP")?.split(separator: "%").first.map(String.init)
+        log.notice("mirror: ANSWER result=\(obj["result"] as? String ?? "?", privacy: .public) host=\(host ?? "nil", privacy: .public)")
         guard obj["result"] as? String == "ok", let answer = obj["answer"] as? [String: Any],
-              let port = answer["udpPort"] as? Int, let host = channel?.remoteAddress else {
+              let port = answer["udpPort"] as? Int, let host else {
             return fallbackToHLS()
         }
+        castProgress = String(localized: "Começando a enviar a tela…")
         Task {
             do {
-                try await st.start(host: host, port: UInt16(port))
+                let pattern = ProcessInfo.processInfo.environment["CAST_TEST_PATTERN"] != nil
+                try await withTimeout(seconds: 10) { try await st.start(host: host, port: UInt16(port), testPattern: pattern) }
+                log.notice("mirror: enviando para \(host, privacy: .public):\(port)")
                 castProgress = nil
             } catch {
+                log.error("mirror: captura não começou: \(error.localizedDescription, privacy: .public)")
                 castProgress = nil
-                endMirroring()
-                notice = String(localized: "Não consegui capturar a tela. Confira a permissão de Gravação de Tela em Ajustes do Sistema.")
+                stopMirroring()
+                needsRelaunchForScreen = true
+                notice = String(localized: "Não consegui capturar a tela. Se você acabou de liberar a Gravação de Tela, use “Reabrir app”.")
             }
         }
     }
@@ -906,7 +941,7 @@ final class CastStore: ObservableObject {
         mirrorShown = false
         castProgress = String(localized: "Preparando o espelhamento…")
         do {
-            try await m.start(withAudio: mirrorAudio)
+            try await withTimeout(seconds: 10) { try await m.start(withAudio: self.mirrorAudio) }
         } catch {
             castProgress = nil
             endMirroring()
@@ -1130,6 +1165,21 @@ final class CastStore: ObservableObject {
                 withAnimation(.easeInOut(duration: 0.6)) { artworkTint = c }
             }
         }
+    }
+}
+
+struct TimeoutError: LocalizedError {
+    var errorDescription: String? { String(localized: "Demorou demais para responder") }
+}
+
+/// Corre a operação contra um prazo.
+func withTimeout<T: Sendable>(seconds: Double, _ op: @escaping @Sendable () async throws -> T) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask { try await op() }
+        group.addTask { try await Task.sleep(for: .seconds(seconds)); throw TimeoutError() }
+        let result = try await group.next()!
+        group.cancelAll()
+        return result
     }
 }
 
