@@ -98,6 +98,13 @@ final class CastStore: ObservableObject {
     }
     @Published private(set) var recents: [RecentCast] = []
     @Published private(set) var dashboardOn = false
+    @Published private(set) var mirroring = false
+    @Published var mirrorAudio = UserDefaults.standard.object(forKey: "mirrorAudio") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(mirrorAudio, forKey: "mirrorAudio") }
+    }
+    private var mirror: ScreenMirror?
+    private var mirrorShown = false
+    static let mirrorTitle = String(localized: "Tela do Mac")
     @Published private(set) var dashboardPreview: NSImage?
 
     private var browser: NWBrowser?
@@ -451,6 +458,9 @@ final class CastStore: ObservableObject {
         if dashboardOn, dashboardShown, newApp.appId != Self.defaultReceiver {
             endDashboard()
         }
+        if mirroring, mirrorShown, newApp.appId != Self.defaultReceiver {
+            endMirroring()
+        }
         if let load = pendingLoad, newApp.appId == Self.defaultReceiver, newApp.hasMedia {
             pendingLoad = nil
             send(to: newApp.transportId, ns: CastNS.media, load)
@@ -488,6 +498,10 @@ final class CastStore: ObservableObject {
         if dashboardOn {
             if new.title == Self.dashboardTitle { dashboardShown = true }
             else if dashboardShown, new.title != nil { endDashboard() }
+        }
+        if mirroring {
+            if new.title == Self.mirrorTitle { mirrorShown = true }
+            else if mirrorShown, new.title != nil { endMirroring() }
         }
         withAnimation(.snappy) { media = new }
         loadTint(for: new.artwork)
@@ -580,6 +594,7 @@ final class CastStore: ObservableObject {
     func cast(_ url: URL, title: String? = nil, youtube action: YouTubeLounge.Action = .playNow) async {
         guard connected else { error = String(localized: "Chromecast desconectado"); return }
         notice = nil
+        if mirroring { endMirroring() }
         if !url.isFileURL, YouTubeLink(url) == nil { castProgress = String(localized: "Procurando o vídeo…") }
         let cookies = useBrowserLogin ? tabs.ytdlpBrowserName : nil
         switch await Resolver.resolve(url, cookiesFrom: cookies) {
@@ -758,21 +773,23 @@ final class CastStore: ObservableObject {
     }
 
     /// Abre o player padrão do Chromecast (se preciso) e manda carregar a mídia.
-    private func load(contentURL: String, mime: String, title: String, image: URL? = nil, quiet: Bool = false) {
+    private func load(contentURL: String, mime: String, title: String, image: URL? = nil, quiet: Bool = false, live: Bool = false,
+                      fmp4: Bool = false) {
         let kind = mime.hasPrefix("image/") ? 4 : mime.hasPrefix("audio/") ? 3 : 0
         var metadata: [String: Any] = ["metadataType": kind, "title": title]
         if let image { metadata["images"] = [["url": image.absoluteString]] }
-        let request: [String: Any] = [
-            "type": "LOAD",
-            "autoplay": true,
-            "currentTime": 0,
-            "media": [
-                "contentId": contentURL,
-                "contentType": mime,
-                "streamType": "BUFFERED",
-                "metadata": metadata,
-            ],
+        var media: [String: Any] = [
+            "contentId": contentURL,
+            "contentType": mime,
+            "streamType": live ? "LIVE" : "BUFFERED",
+            "metadata": metadata,
         ]
+        if fmp4 {
+            // sem isso o player supõe segmentos MPEG-TS e trata os nossos fMP4 pelo caminho lento
+            media["hlsSegmentFormat"] = "fmp4"
+            media["hlsVideoSegmentFormat"] = "fmp4"
+        }
+        let request: [String: Any] = ["type": "LOAD", "autoplay": true, "currentTime": 0, "media": media]
         if !quiet { castProgress = String(localized: "Abrindo na TV…") }
         if let a = app, a.appId == Self.defaultReceiver, a.hasMedia {
             send(to: a.transportId, ns: CastNS.media, request)
@@ -785,6 +802,59 @@ final class CastStore: ObservableObject {
                 if self?.pendingLoad != nil { self?.pendingLoad = nil; self?.castProgress = nil }
             }
         }
+    }
+
+    // MARK: - Espelhar a tela
+
+    func startMirroring() async {
+        guard connected, !mirroring else { return }
+        guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
+            notice = String(localized: "Libere o app em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema, e tente de novo.")
+            return
+        }
+        if dashboardOn { endDashboard() }
+        guard let host = channel?.localAddress, let port = try? MediaServer.shared.start() else {
+            error = String(localized: "Não consegui abrir o servidor local"); return
+        }
+        let m = ScreenMirror()
+        m.onReady = { [weak self] in
+            Task { @MainActor in
+                guard let self, self.mirroring else { return }
+                self.load(contentURL: "http://\(host):\(port)\(m.playlistPath)", mime: "application/x-mpegurl",
+                          title: Self.mirrorTitle, quiet: true, live: true, fmp4: true)
+                self.castProgress = nil
+            }
+        }
+        m.onError = { [weak self] message in
+            Task { @MainActor in
+                self?.error = String(localized: "Espelhamento parou: \(message)")
+                self?.stopMirroring()
+            }
+        }
+        mirror = m
+        mirroring = true
+        mirrorShown = false
+        castProgress = String(localized: "Preparando o espelhamento…")
+        do {
+            try await m.start(withAudio: mirrorAudio)
+        } catch {
+            castProgress = nil
+            endMirroring()
+            notice = String(localized: "Não consegui capturar a tela. Confira a permissão de Gravação de Tela em Ajustes do Sistema.")
+        }
+    }
+
+    func stopMirroring() {
+        let showing = mirrorShown && app?.appId == Self.defaultReceiver
+        endMirroring()
+        if showing { stopCasting() }
+    }
+
+    private func endMirroring() {
+        mirror?.stop()
+        mirror = nil
+        mirroring = false
+        mirrorShown = false
     }
 
     // MARK: - Painel da casa na TV

@@ -72,6 +72,8 @@ struct RootView: View {
 
             if !store.connected {
                 Searching()
+            } else if store.mirroring {
+                MirrorActive(tint: tint)
             } else if store.dashboardOn {
                 DashboardActive(tint: tint)
             } else if let media = store.media {
@@ -82,9 +84,9 @@ struct RootView: View {
 
             if store.connected {
                 SendBar(tint: tint)
-                if !store.isCasting, !store.dashboardOn { IdleHome(tint: tint) }
+                if !store.isCasting, !store.dashboardOn, !store.mirroring { IdleHome(tint: tint) }
                 VolumeRow(tint: tint)
-                if store.isCasting, !store.dashboardOn { SleepRow(tint: tint) }
+                if store.isCasting, !store.dashboardOn, !store.mirroring { SleepRow(tint: tint) }
             }
             Footer()
         }
@@ -176,7 +178,8 @@ private struct Header: View {
         guard store.connected else {
             return store.reconnecting ? String(localized: "Reconectando…") : String(localized: "Conectando…")
         }
-        if store.dashboardOn { return String(localized: "Mostrando o painel da casa") }
+        if store.mirroring { return String(localized: "Espelhando a tela do Mac") }
+        if store.dashboardOn { return String(localized: "Mostrando o painel") }
         guard let app = store.app else { return String(localized: "Pronto") }
         if app.isIdle { return String(localized: "Pronto para transmitir") }
         if let m = store.media {
@@ -230,6 +233,7 @@ private struct Header: View {
             Menu {
                 Button("Transmitir arquivo…") { pickFile() }
                 Toggle("Usar login do navegador (Instagram e X)", isOn: $store.useBrowserLogin)
+                Toggle("Som do Mac ao espelhar", isOn: $store.mirrorAudio)
                 Divider()
                 Button("Renomear…") { newName = store.displayName; renaming = true }
                 Button("Reiniciar Chromecast…") { confirmReboot = true }
@@ -629,6 +633,10 @@ private struct IdleHome: View {
                     .help(String(localized: "Liga a TV e troca a entrada (HDMI-CEC)"))
                 Tile(symbol: "folder", title: String(localized: "Arquivo"), tint: tint, action: pickFile)
                     .help(String(localized: "Vídeo, música ou foto do Mac"))
+                Tile(symbol: "rectangle.on.rectangle", title: String(localized: "Espelhar"), tint: tint) {
+                    Task { await store.startMirroring() }
+                }
+                .help(String(localized: "Mostra a tela do Mac na TV (atraso de alguns segundos)"))
             }
 
             if !store.recents.isEmpty {
@@ -671,7 +679,7 @@ private struct Tile: View {
                 Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(tint)
                 Text(title).font(.system(size: 11, weight: .semibold))
             }
-            .frame(maxWidth: .infinity, minHeight: 58)
+            .frame(maxWidth: .infinity, minHeight: 56)
             .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(hover ? 0.1 : 0.06)))
             .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.06)))
             .contentShape(Rectangle())
@@ -763,6 +771,49 @@ private struct Searching: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: 160)
+    }
+}
+
+private struct MirrorActive: View {
+    @EnvironmentObject var store: CastStore
+    let tint: Color
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 12, style: .continuous).fill(tint.opacity(0.15))
+                    Image(systemName: "rectangle.on.rectangle").font(.system(size: 20, weight: .light)).foregroundStyle(tint)
+                }
+                .frame(width: 52, height: 52)
+                VStack(alignment: .leading, spacing: 3) {
+                    HStack(spacing: 6) {
+                        Text("AO VIVO")
+                            .font(.system(size: 9, weight: .heavy)).tracking(0.8)
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 6).frame(height: 16)
+                            .background(Capsule().fill(.red))
+                        Text("Espelhando a tela").font(.system(size: 14, weight: .semibold))
+                    }
+                    Text("A TV mostra com alguns segundos de atraso.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+            Label(store.mirrorAudio ? String(localized: "Som do Mac vai junto (abaixe o volume do Mac pra não ter eco)")
+                                     : String(localized: "Só imagem (o som fica no Mac)"),
+                  systemImage: store.mirrorAudio ? "speaker.wave.2" : "speaker.slash")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Button(action: store.stopMirroring) {
+                Label("Parar de espelhar", systemImage: "stop.fill")
+                    .font(.system(size: 12, weight: .semibold))
+                    .frame(maxWidth: .infinity, minHeight: 32)
+                    .background(RoundedRectangle(cornerRadius: 10, style: .continuous).fill(.white.opacity(0.1)))
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(0.06)))
     }
 }
 

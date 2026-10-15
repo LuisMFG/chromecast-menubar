@@ -37,6 +37,10 @@ final class MediaServer: @unchecked Sendable {
         return path
     }
 
+    func unpublish(path: String) {
+        queue.async { self.blobs[path] = nil }
+    }
+
     /// Publica bytes em memória num caminho fixo (substitui o anterior).
     func publish(data: Data, path: String, contentType: String) {
         queue.sync { blobs[path] = (data, contentType) }
@@ -54,10 +58,15 @@ final class MediaServer: @unchecked Sendable {
             let method = String(parts[0])
             let path = String(parts[1]).components(separatedBy: "?")[0]
             let range = lines.first { $0.lowercased().hasPrefix("range:") }
+            if method == "OPTIONS" {
+                return self.reply(c, 200, ["Access-Control-Allow-Origin": "*", "Access-Control-Allow-Headers": "*",
+                                           "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS"], Data())
+            }
 
             if let (blob, type) = self.blobs[path] {
-                return self.reply(c, 200, ["Content-Type": type, "Cache-Control": "no-store"], method == "HEAD" ? Data() : blob,
-                                  length: blob.count)
+                // CORS: o player do Chromecast busca playlist/segmentos HLS via XHR
+                return self.reply(c, 200, ["Content-Type": type, "Cache-Control": "no-store", "Access-Control-Allow-Origin": "*"],
+                                  method == "HEAD" ? Data() : blob, length: blob.count)
             }
             guard let file = self.files[path],
                   let size = (try? FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber)?.intValue,
