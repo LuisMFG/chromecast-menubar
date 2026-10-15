@@ -176,8 +176,9 @@ final class CastStore: ObservableObject {
 
     /// Store com dados fictícios, usado só pra gerar snapshots da interface.
     init(preview app: ReceiverApp?, media: MediaState?, volume: Double, tint: Color? = nil,
-         tab: BrowserTab? = nil, recents: [RecentCast] = []) {
+         tab: BrowserTab? = nil, recents: [RecentCast] = [], mirroring: Bool = false) {
         isPreview = true
+        self.mirroring = mirroring
         let room = String(localized: "Sala")
         devices = [CastDevice(id: "preview", name: room, model: "Chromecast", endpoint: .hostPort(host: "127.0.0.1", port: 8009))]
         selectedId = "preview"

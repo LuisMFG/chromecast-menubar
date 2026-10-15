@@ -16,6 +16,31 @@ import SwiftUI
     print(path)
 }
 
+struct Panel: View {
+    let store: CastStore
+    var body: some View {
+        RootView()
+            .environmentObject(store)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(.white.opacity(0.12)))
+            .shadow(color: .black.opacity(0.5), radius: 24, y: 12)
+    }
+}
+
+/// Fundo tipo wallpaper do macOS
+struct Wallpaper: View {
+    var body: some View {
+        ZStack {
+            LinearGradient(colors: [Color(red: 0.12, green: 0.08, blue: 0.22), Color(red: 0.03, green: 0.03, blue: 0.07)],
+                           startPoint: .topLeading, endPoint: .bottomTrailing)
+            RadialGradient(colors: [Color(red: 0.95, green: 0.35, blue: 0.3).opacity(0.3), .clear],
+                           center: .topLeading, startRadius: 0, endRadius: 800)
+            RadialGradient(colors: [Color(red: 0.35, green: 0.4, blue: 1).opacity(0.3), .clear],
+                           center: .bottomTrailing, startRadius: 0, endRadius: 800)
+        }
+    }
+}
+
 @main enum Snapshot {
     @MainActor static func main() {
         let out = CommandLine.arguments.dropFirst().first ?? "docs"
@@ -48,8 +73,16 @@ import SwiftUI
         let xtab = BrowserTab(browser: "Brave", bundleId: "com.brave.Browser", title: "NASA on X: \"Artemis launch\"",
                               url: URL(string: "https://x.com/nasa/status/1")!)
         write(RootView().environmentObject(CastStore(preview: backdrop, media: nil, volume: 0.8, tab: xtab, recents: recents)), "\(out)/idle.png")
-        let spotify = CastStore(preview: backdrop, media: nil, volume: 0.8, tab: nil, recents: [])
-        spotify.notice = "Abri no Spotify. Lá, toque em “Conectar a um dispositivo” e escolha Sala — o Spotify só transmite pelo próprio app."
-        write(RootView().environmentObject(spotify), "\(out)/notice.png")
+        let idle = CastStore(preview: backdrop, media: nil, volume: 0.8, tab: xtab, recents: recents)
+        let dmr = ReceiverApp(appId: "CC1AD845", name: "Default Media Receiver", statusText: "", isIdle: false, sessionId: "m", transportId: "m", hasMedia: true)
+        let mirror = CastStore(preview: dmr, media: nil, volume: 0.5, tab: nil, recents: [], mirroring: true)
+        write(RootView().environmentObject(mirror), "\(out)/mirror.png")
+        write(HStack(alignment: .top, spacing: 36) {
+            Panel(store: playing)
+            Panel(store: idle)
+            Panel(store: mirror)
+        }
+        .padding(56)
+        .background(Wallpaper()), "\(out)/hero.png")
     }
 }
