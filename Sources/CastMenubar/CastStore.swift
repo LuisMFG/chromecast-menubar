@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import Network
 import SwiftUI
+import Carbon.HIToolbox
 
 struct CastDevice: Identifiable, Hashable {
     let id: String          // nome do serviço Bonjour
@@ -60,6 +61,7 @@ final class CastStore: ObservableObject {
     @Published var muted = false
     @Published var volumeStep: Double = 0.05
     @Published var artworkTint: Color?
+    @Published private(set) var artworkImage: NSImage?
     @Published var error: String?
     @Published var info: DeviceInfo?
 
@@ -72,6 +74,8 @@ final class CastStore: ObservableObject {
     private var volumeTask: Task<Void, Never>?
     private var lastArtwork: URL?
     private var setupRequestId = 1
+    private var isPreview = false
+    private lazy var nowPlaying = NowPlayingBridge(store: self)
     private var pollCount = 0
 
     var device: CastDevice? { devices.first { $0.id == selectedId } }
@@ -80,6 +84,7 @@ final class CastStore: ObservableObject {
 
     init() {
         startBrowsing()
+        registerHotKeys()
     }
 
     /// Store com dados fictícios, usado só pra gerar snapshots da interface.
@@ -91,6 +96,7 @@ final class CastStore: ObservableObject {
         self.media = media
         self.volume = volume
         self.artworkTint = tint
+        isPreview = true
     }
 
     // MARK: - Descoberta (Bonjour _googlecast._tcp)
@@ -223,6 +229,7 @@ final class CastStore: ObservableObject {
         }
         guard let a = (s["applications"] as? [[String: Any]])?.first else {
             app = nil; media = nil; mediaTransport = nil
+            publishNowPlaying()
             return
         }
         let namespaces = (a["namespaces"] as? [[String: Any]])?.compactMap { $0["name"] as? String } ?? []
@@ -243,10 +250,12 @@ final class CastStore: ObservableObject {
         } else if !newApp.hasMedia {
             mediaTransport = nil
             media = nil
+            publishNowPlaying()
         }
     }
 
     private func mediaStatus(_ s: [String: Any]?) {
+        defer { publishNowPlaying() }
         guard let s, let sid = s["mediaSessionId"] as? Int else { media = nil; return }
         let info = s["media"] as? [String: Any]
         let meta = info?["metadata"] as? [String: Any]
@@ -281,6 +290,7 @@ final class CastStore: ObservableObject {
         media?.updatedAt = Date()
         media?.playerState = playing ? "PAUSED" : "PLAYING"
         send(to: t, ns: CastNS.media, ["type": playing ? "PAUSE" : "PLAY", "mediaSessionId": m.sessionId])
+        publishNowPlaying()
     }
 
     func seek(to time: Double) {
@@ -289,6 +299,7 @@ final class CastStore: ObservableObject {
         media?.currentTime = time
         media?.updatedAt = Date()
         send(to: t, ns: CastNS.media, ["type": "SEEK", "mediaSessionId": m.sessionId, "currentTime": time])
+        publishNowPlaying()
     }
 
     func skip(_ seconds: Double) {
@@ -318,6 +329,34 @@ final class CastStore: ObservableObject {
     func stopCasting() {
         guard let a = app, !a.isIdle else { return }
         send(to: "receiver-0", ns: CastNS.receiver, ["type": "STOP", "sessionId": a.sessionId])
+    }
+
+    // MARK: - Teclas de mídia e atalhos globais
+
+    private func publishNowPlaying() {
+        guard !isPreview else { return }
+        nowPlaying.update()
+    }
+
+    private func registerHotKeys() {
+        let mods = controlKey | optionKey
+        HotKeys.shared.register(keyCode: kVK_UpArrow, modifiers: mods) { [weak self] in self?.nudgeVolume(+1) }
+        HotKeys.shared.register(keyCode: kVK_DownArrow, modifiers: mods) { [weak self] in self?.nudgeVolume(-1) }
+        HotKeys.shared.register(keyCode: kVK_Space, modifiers: mods) { [weak self] in
+            guard let self, let m = self.media else { return }
+            self.togglePlay()
+            HUD.shared.show(symbol: m.isPlaying ? "pause.fill" : "play.fill",
+                            title: m.isPlaying ? String(localized: "Pausado") : String(localized: "Tocando"))
+        }
+    }
+
+    /// ⌃⌥↑ / ⌃⌥↓: volume da TV de qualquer lugar, com aviso na tela.
+    private func nudgeVolume(_ direction: Double) {
+        guard connected else { return }
+        if muted { toggleMute() }
+        setVolume(volume + direction * volumeStep)
+        HUD.shared.show(symbol: volume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill",
+                        title: "\(displayName) · \(Int((volume * 100).rounded()))%", level: volume)
     }
 
     // MARK: - API de configuração (canal setup)
@@ -361,11 +400,15 @@ final class CastStore: ObservableObject {
     private func loadTint(for url: URL?) {
         guard url != lastArtwork else { return }
         lastArtwork = url
-        guard let url else { artworkTint = nil; return }
+        guard let url else { artworkTint = nil; artworkImage = nil; return }
         Task {
             guard let (data, _) = try? await URLSession.shared.data(from: url),
-                  let img = NSImage(data: data), let c = img.averageColor else { return }
-            withAnimation(.easeInOut(duration: 0.6)) { artworkTint = c }
+                  let img = NSImage(data: data) else { return }
+            artworkImage = img
+            publishNowPlaying()
+            if let c = img.averageColor {
+                withAnimation(.easeInOut(duration: 0.6)) { artworkTint = c }
+            }
         }
     }
 }
