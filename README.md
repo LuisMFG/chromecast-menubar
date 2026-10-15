@@ -24,7 +24,7 @@ Built for (and tested on) the **1st-generation Chromecast**, which still works f
 - **Spotify:** links play through the Spotify app on your Mac, which sends them to the TV via Spotify Connect.
 - **Instagram and X:** videos are resolved with [yt-dlp](https://github.com/yt-dlp/yt-dlp). X works without signing in; Instagram can use your browser session (opt-in).
 - **Files and links:** drop a video, song, photo or link on the panel, or use *Open With → Chromecast* in Finder. HEVC and 4K are converted to 1080p H.264 for the 1st-gen device.
-- **Mirror your Mac, instantly:** uses Cast Streaming (the same protocol Chrome uses for tab casting) with H.264 encrypted RTP. About 0.2–0.3 s behind; Mac audio stays in sync on the Mac. Falls back to live HLS (~4 s) if a receiver refuses the offer.
+- **Mirror your Mac, instantly:** uses Cast Streaming (the same protocol Chrome uses for tab casting) with encrypted H.264 + Opus RTP. About 0.2–0.3 s behind, with sound on the TV (the Mac is muted while mirroring, then restored). Falls back to live HLS (~4 s) if a receiver refuses the offer.
 - **Now Playing and media keys:** ⏯ ⏮ ⏭ control the TV, and the macOS Now Playing widget shows artwork and progress. **⌃⌥↑ / ⌃⌥↓** change the TV volume with an on-screen HUD.
 - **Sleep timer:** 15m / 30m / 1h or *end of episode*. In the last minute the volume fades out, then casting stops and the volume goes back to where it was.
 - **TV dashboard:** a full-screen clock, date and weather when nothing is playing.
@@ -99,7 +99,7 @@ Mac menu bar app  ───▶ │ receiver   GET_STATUS · LAUNCH · STOP · SE
    Files      built-in HTTP server (Range) → Default Media Receiver (CC1AD845)
    Instagram/X  yt-dlp → direct MP4/HLS → Default Media Receiver
    Spotify    Spotify app on the Mac (AppleScript) → Spotify Connect → Spotify receiver (CC32E753)
-   Mirroring  ScreenCaptureKit → VideoToolbox H.264 → AES-128-CTR → Cast RTP/UDP (+ RTCP SR, NACK, PLI) → Chrome Mirroring receiver (0F5096E8)
+   Mirroring  ScreenCaptureKit → H.264 (VideoToolbox) + Opus (AudioToolbox) → AES-128-CTR → Cast RTP/UDP (+ RTCP SR, NACK, PLI) → Chrome Mirroring receiver (0F5096E8)
               fallback: AVAssetWriter → 0.5 s HLS fMP4 segments → built-in server → LIVE HLS
 ```
 
@@ -119,7 +119,6 @@ Details, including what was tested and what wasn't, are in [REA-FINDINGS.md](REA
 - **Spotify** only plays on the TV through Spotify's own apps. In Spotify on the Mac, pick the Chromecast once under *Connect to a device*; it remembers it after that.
 - **Instagram** requires a session. Turn on *⋯ → Use browser sign-in* to let yt-dlp use your browser cookies.
 - **yt-dlp extractors** sometimes break when sites change. The panel shows yt-dlp's error; `brew upgrade yt-dlp` usually fixes it.
-- **Mirroring** in instant mode is video-only on the TV (sound stays on the Mac, in sync). The ~4 s HLS fallback can carry audio.
 - **The sleep timer runs on the Mac.** While it's armed the Mac won't idle-sleep, but if you close the lid it fires when the Mac wakes.
 
 ## Project layout

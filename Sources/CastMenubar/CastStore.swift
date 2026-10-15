@@ -102,9 +102,16 @@ final class CastStore: ObservableObject {
     @Published private(set) var recents: [RecentCast] = []
     @Published private(set) var dashboardOn = false
     @Published private(set) var mirroring = false
+    /// Mandar o som do Mac pra TV ao espelhar.
     @Published var mirrorAudio = UserDefaults.standard.object(forKey: "mirrorAudio") as? Bool ?? true {
         didSet { UserDefaults.standard.set(mirrorAudio, forKey: "mirrorAudio") }
     }
+    /// Silenciar o Mac enquanto o som vai pra TV (evita eco).
+    @Published var muteMacWhileMirroring = UserDefaults.standard.object(forKey: "muteMac") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(muteMacWhileMirroring, forKey: "muteMac") }
+    }
+    /// A TV aceitou o fluxo de áudio nesta sessão.
+    @Published private(set) var mirrorHasAudio = false
     private var mirror: ScreenMirror?
     private var streamer: CastStreamer?
     private var streamerOffered = false
@@ -847,7 +854,7 @@ final class CastStore: ObservableObject {
         }
         needsRelaunchForScreen = false
         if dashboardOn { endDashboard() }
-        let st = CastStreamer()
+        let st = CastStreamer(withAudio: mirrorAudio)
         st.onError = { [weak self] message in
             Task { @MainActor in
                 log.error("mirror: captura parou: \(message, privacy: .public)")
@@ -890,12 +897,17 @@ final class CastStore: ObservableObject {
               let port = answer["udpPort"] as? Int, let host else {
             return fallbackToHLS()
         }
+        let audioOK = st.withAudio && ((answer["sendIndexes"] as? [Int])?.contains(1) ?? false)
         castProgress = String(localized: "Começando a enviar a tela…")
         Task {
             do {
                 let pattern = ProcessInfo.processInfo.environment["CAST_TEST_PATTERN"] != nil
-                try await withTimeout(seconds: 10) { try await st.start(host: host, port: UInt16(port), testPattern: pattern) }
-                log.notice("mirror: enviando para \(host, privacy: .public):\(port)")
+                try await withTimeout(seconds: 10) {
+                    try await st.start(host: host, port: UInt16(port), audioAccepted: audioOK, testPattern: pattern)
+                }
+                log.notice("mirror: enviando para \(host, privacy: .public):\(port) áudio=\(audioOK)")
+                mirrorHasAudio = audioOK
+                if audioOK, muteMacWhileMirroring, !pattern { MacAudio.silence() }
                 castProgress = nil
             } catch {
                 log.error("mirror: captura não começou: \(error.localizedDescription, privacy: .public)")
@@ -961,6 +973,8 @@ final class CastStore: ObservableObject {
         streamer?.stop()
         streamer = nil
         streamerOffered = false
+        mirrorHasAudio = false
+        MacAudio.restore()
         mirroring = false
         mirrorShown = false
     }

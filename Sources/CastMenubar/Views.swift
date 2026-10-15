@@ -233,7 +233,8 @@ private struct Header: View {
             Menu {
                 Button("Transmitir arquivo…") { pickFile() }
                 Toggle("Usar login do navegador (Instagram e X)", isOn: $store.useBrowserLogin)
-                Toggle("Som do Mac no modo compatível", isOn: $store.mirrorAudio)
+                Toggle("Som na TV ao espelhar", isOn: $store.mirrorAudio)
+                Toggle("Silenciar o Mac ao espelhar", isOn: $store.muteMacWhileMirroring)
                 Divider()
                 Button("Renomear…") { newName = store.displayName; renaming = true }
                 Button("Reiniciar Chromecast…") { confirmReboot = true }
@@ -826,10 +827,14 @@ private struct MirrorActive: View {
                 }
                 Spacer()
             }
-            Label(store.mirrorInstant ? String(localized: "O som continua saindo do Mac, em sincronia com a TV.")
+            Label(store.mirrorInstant
+                  ? (store.mirrorHasAudio
+                     ? (store.muteMacWhileMirroring ? String(localized: "Som na TV — o Mac fica mudo até parar.")
+                                                     : String(localized: "Som na TV e no Mac."))
+                     : String(localized: "Só imagem — o som fica no Mac."))
                   : store.mirrorAudio ? String(localized: "Som do Mac vai junto (abaixe o volume do Mac pra não ter eco)")
                   : String(localized: "Só imagem (o som fica no Mac)"),
-                  systemImage: store.mirrorInstant ? "speaker.wave.2" : store.mirrorAudio ? "speaker.wave.2" : "speaker.slash")
+                  systemImage: store.mirrorHasAudio || (!store.mirrorInstant && store.mirrorAudio) ? "speaker.wave.2" : "speaker.slash")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button(action: store.stopMirroring) {

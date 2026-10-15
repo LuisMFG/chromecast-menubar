@@ -73,6 +73,11 @@
 "Dica: arraste um arquivo ou link pra cá, ou use ⌃⌥T no navegador." = "Tip: drop a file or link here, or press ⌃⌥T in your browser.";
 
 /* Espelhar */
+"Som na TV ao espelhar" = "Sound on the TV when mirroring";
+"Silenciar o Mac ao espelhar" = "Mute the Mac while mirroring";
+"Som na TV — o Mac fica mudo até parar." = "Sound on the TV — the Mac stays muted until you stop.";
+"Som na TV e no Mac." = "Sound on the TV and the Mac.";
+"Só imagem — o som fica no Mac." = "Video only — sound stays on the Mac.";
 "Libere o app em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema. Depois use “Reabrir app” — o macOS só aplica a permissão quando o app reabre." = "Allow the app in System Settings → Privacy & Security → Screen & System Audio Recording, then use “Relaunch app” — macOS only applies the permission after the app restarts.";
 "Não consegui capturar a tela. Se você acabou de liberar a Gravação de Tela, use “Reabrir app”." = "Couldn't capture the screen. If you just allowed Screen Recording, use “Relaunch app”.";
 "Abrindo o espelhamento na TV…" = "Opening mirroring on the TV…";
@@ -82,9 +87,7 @@
 "Demorou demais para responder" = "It took too long to respond";
 "Modo instantâneo — quase sem atraso." = "Instant mode — almost no delay.";
 "Modo compatível — alguns segundos de atraso." = "Compatibility mode — a few seconds behind.";
-"O som continua saindo do Mac, em sincronia com a TV." = "Sound keeps playing on the Mac, in sync with the TV.";
 "Mostra a tela do Mac na TV, quase sem atraso" = "Shows your Mac screen on the TV with almost no delay";
-"Som do Mac no modo compatível" = "Send Mac audio in compatibility mode";
 "AO VIVO" = "LIVE";
 "Espelhando a tela" = "Mirroring screen";
 "Som do Mac vai junto (abaixe o volume do Mac pra não ter eco)" = "Mac audio goes too (lower your Mac's volume to avoid echo)";

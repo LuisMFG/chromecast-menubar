@@ -1,7 +1,10 @@
+import AudioToolbox
+import AVFoundation
 import CommonCrypto
 import CoreMedia
 import Foundation
 import Network
+import os
 import ScreenCaptureKit
 import VideoToolbox
 
@@ -9,8 +12,10 @@ import VideoToolbox
 ///
 /// 1. Abre o receptor de espelhamento (0F5096E8) e manda um OFFER em `urn:x-cast:com.google.cast.webrtc`.
 /// 2. O ANSWER traz a porta UDP do aparelho.
-/// 3. Cada quadro H.264 (Annex B) é criptografado com AES-128-CTR e enviado em pacotes RTP com o cabeçalho Cast.
-/// 4. RTCP: Sender Report a cada 500 ms (relógio), e o app atende NACK (reenvia pacotes) e PLI (manda keyframe).
+/// 3. Vídeo H.264 (Annex B) e áudio Opus (20 ms) viram quadros criptografados com AES-128-CTR e vão em pacotes
+///    RTP com o cabeçalho Cast — um fluxo (SSRC, chave, numeração) para cada.
+/// 4. RTCP: Sender Report de cada fluxo a cada 500 ms (relógio e sincronia labial); o app atende NACK
+///    (reenvia pacotes) e PLI (manda keyframe).
 ///
 /// Referência do formato: media/cast (Chromium) e Open Screen (cast/streaming).
 final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked Sendable {
@@ -22,69 +27,80 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     let fps = 30
     let targetDelayMs = 200
     let bitrate = 4_000_000
-
-    // sessão
-    let ssrc = UInt32.random(in: 1...0x00FF_FFFF)
-    private let aesKey: [UInt8] = (0..<16).map { _ in UInt8.random(in: 0...255) }
-    private let aesIvMask: [UInt8] = (0..<16).map { _ in UInt8.random(in: 0...255) }
-    private let payloadType: UInt8 = 96
+    let withAudio: Bool
 
     var onError: ((String) -> Void)?
-    /// Quadros que a TV confirmou ter recebido (pra diagnóstico).
-    private(set) var ackedFrames = 0
     private(set) var sentFrames = 0
+    private(set) var sentAudioFrames = 0
     private(set) var rtcpPackets = 0
     private(set) var retransmits = 0
     private(set) var keyframeRequests = 0
+    private(set) var lastAckVideo: Int = -1
+    private(set) var lastAckAudio: Int = -1
+
+    private let video = RtpStream(payloadType: 96, clockRate: 90_000)
+    private let audio = RtpStream(payloadType: 127, clockRate: 48_000)
 
     private let queue = DispatchQueue(label: "cast.streamer")
     private var udp: NWConnection?
     private var stream: SCStream?
     private var encoder: VTCompressionSession?
+    private var opus: OpusEncoder?
     private var srTimer: DispatchSourceTimer?
     private var idleTimer: DispatchSourceTimer?
     private var patternTimer: DispatchSourceTimer?
 
-    private var frameId: UInt32 = 0
-    private var sequence: UInt16 = 0
-    private var packetCount: UInt32 = 0
-    private var octetCount: UInt32 = 0
     private var forceKeyFrame = true
     private let clockStart = CMClockGetTime(CMClockGetHostTimeClock())
     private var lastPixelBuffer: CVPixelBuffer?
     private var lastFrameAt = Date.distantPast
-    /// Pacotes dos últimos quadros, pra atender NACK.
-    private var history: [UInt8: [Data]] = [:]
 
-    init(maxWidth: Int = 1280) {
+    // áudio: amostras intercaladas (L, R) esperando completar 20 ms
+    private var pcm: [Float] = []
+    private var pcmStart = 0.0                 // segundos desde clockStart da 1ª amostra em `pcm`
+    private var rmsWindow: [Float] = []
+    private var lastLevelLog = Date()
+
+    init(maxWidth: Int = 1280, withAudio: Bool = true) {
         let screen = NSScreen.main?.frame.size ?? CGSize(width: 1440, height: 900)
         let w = min(maxWidth, Int(screen.width))
         width = w / 2 * 2
         height = min(Int(Double(w) * screen.height / screen.width), 800) / 2 * 2
+        self.withAudio = withAudio
     }
 
     // MARK: - Oferta
 
     /// Mensagem OFFER (o canal Cast é do CastStore, que manda e devolve o ANSWER).
     func offer(seqNum: Int) -> [String: Any] {
-        let video: [String: Any] = [
+        var streams: [[String: Any]] = [[
             "index": 0, "type": "video_source", "codecName": "h264", "rtpProfile": "cast",
-            "rtpPayloadType": Int(payloadType), "ssrc": Int(ssrc), "targetDelay": targetDelayMs,
-            "aesKey": aesKey.hex, "aesIvMask": aesIvMask.hex,
+            "rtpPayloadType": Int(video.payloadType), "ssrc": Int(video.ssrc), "targetDelay": targetDelayMs,
+            "aesKey": video.key.hex, "aesIvMask": video.ivMask.hex,
             "timeBase": "1/90000", "maxFrameRate": "\(fps * 1000)/1000", "maxBitRate": bitrate,
             "resolutions": [["width": width, "height": height]], "receiverRtcpEventLog": false,
-        ]
+        ]]
+        if withAudio {
+            streams.append([
+                "index": 1, "type": "audio_source", "codecName": "opus", "rtpProfile": "cast",
+                "rtpPayloadType": Int(audio.payloadType), "ssrc": Int(audio.ssrc), "targetDelay": targetDelayMs,
+                "aesKey": audio.key.hex, "aesIvMask": audio.ivMask.hex,
+                "timeBase": "1/48000", "bitRate": 128_000, "sampleRate": 48_000, "channels": 2,
+                "receiverRtcpEventLog": false,
+            ])
+        }
         return ["type": "OFFER", "seqNum": seqNum,
-                "offer": ["castMode": "mirroring", "receiverGetStatus": true, "supportedStreams": [video]]]
+                "offer": ["castMode": "mirroring", "receiverGetStatus": true, "supportedStreams": streams]]
     }
 
-    /// Recebeu o ANSWER: abre o UDP e começa a capturar.
-    func start(host: String, port: UInt16, testPattern: Bool = false) async throws {
+    /// Recebeu o ANSWER: abre o UDP e começa a capturar. `audioAccepted` vem do sendIndexes da resposta.
+    func start(host: String, port: UInt16, audioAccepted: Bool = true, testPattern: Bool = false) async throws {
         let c = NWConnection(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: port)!, using: .udp)
         c.start(queue: queue)
         udp = c
         receiveRTCP()
         try setupEncoder()
+        if withAudio, audioAccepted { opus = OpusEncoder() }
         startSenderReports()
         if testPattern { startTestPattern() } else { try await startCapture() }
         startIdleRefresh()
@@ -100,12 +116,13 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         queue.async {
             if let e = self.encoder { VTCompressionSessionInvalidate(e) }
             self.encoder = nil
+            self.opus = nil
             self.udp?.cancel(); self.udp = nil
-            self.history.removeAll()
+            self.video.history.removeAll(); self.audio.history.removeAll()
         }
     }
 
-    // MARK: - Captura
+    // MARK: - Captura (tela + som do sistema)
 
     private func startCapture() async throws {
         let content = try await SCShareableContent.excludingDesktopWindows(false, onScreenWindowsOnly: true)
@@ -120,19 +137,30 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         cfg.showsCursor = true
         cfg.queueDepth = 4
+        cfg.capturesAudio = opus != nil
+        cfg.excludesCurrentProcessAudio = true
+        cfg.sampleRate = 48_000
+        cfg.channelCount = 2
         let s = SCStream(filter: SCContentFilter(display: display, excludingWindows: []), configuration: cfg, delegate: self)
         try s.addStreamOutput(self, type: .screen, sampleHandlerQueue: queue)
+        if opus != nil { try s.addStreamOutput(self, type: .audio, sampleHandlerQueue: queue) }
         try await s.startCapture()
         stream = s
     }
 
     func stream(_ stream: SCStream, didOutputSampleBuffer sb: CMSampleBuffer, of type: SCStreamOutputType) {
-        guard type == .screen, sb.isValid,
-              let info = (CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]])?.first,
-              let raw = info[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
-              let pb = sb.imageBuffer else { return }
-        lastPixelBuffer = pb
-        encode(pb, at: sb.presentationTimeStamp)
+        guard sb.isValid else { return }
+        switch type {
+        case .screen:
+            guard let info = (CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[SCStreamFrameInfo: Any]])?.first,
+                  let raw = info[.status] as? Int, SCFrameStatus(rawValue: raw) == .complete,
+                  let pb = sb.imageBuffer else { return }
+            lastPixelBuffer = pb
+            encode(pb, at: sb.presentationTimeStamp)
+        case .audio:
+            handleAudio(sb)
+        default: break
+        }
     }
 
     func stream(_ stream: SCStream, didStopWithError error: Error) {
@@ -172,14 +200,26 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             }
             CVPixelBufferUnlockBaseAddress(pb, [])
             self.lastPixelBuffer = pb
-            self.encode(pb, at: CMClockGetTime(CMClockGetHostTimeClock()))
+            let now = CMClockGetTime(CMClockGetHostTimeClock())
+            self.encode(pb, at: now)
+            // tom de 440 Hz junto, pra testar o áudio
+            if self.opus != nil {
+                let frames = 48_000 / self.fps
+                let t0 = Double(n * frames)
+                var tone = [Float](repeating: 0, count: frames * 2)
+                for i in 0..<frames {
+                    let v = Float(sin(2 * Double.pi * 440 * (t0 + Double(i)) / 48_000) * 0.05)
+                    tone[i * 2] = v; tone[i * 2 + 1] = v
+                }
+                self.appendPCM(tone, at: (now - self.clockStart).seconds)
+            }
             n += 1
         }
         t.resume()
         patternTimer = t
     }
 
-    // MARK: - Codificador H.264 (VideoToolbox, tempo real)
+    // MARK: - Vídeo: H.264 (VideoToolbox, tempo real)
 
     private func setupEncoder() throws {
         var session: VTCompressionSession?
@@ -213,13 +253,11 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         VTCompressionSessionEncodeFrame(encoder, imageBuffer: pb, presentationTimeStamp: pts, duration: .invalid,
                                         frameProperties: frameProps, infoFlagsOut: nil) { [weak self] status, _, sb in
             guard status == noErr, let sb, let self else { return }
-            self.queue.async { self.send(encoded: sb) }
+            self.queue.async { self.sendVideo(sb) }
         }
     }
 
-    // MARK: - Quadro → Annex B → AES-CTR → RTP
-
-    private func send(encoded sb: CMSampleBuffer) {
+    private func sendVideo(_ sb: CMSampleBuffer) {
         guard let block = sb.dataBuffer, let format = sb.formatDescription else { return }
         let attachments = CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[CFString: Any]]
         let isKey = !(attachments?.first?[kCMSampleAttachmentKey_NotSync] as? Bool ?? false)
@@ -252,44 +290,177 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             annexB.append(avcc + offset, count: nalLen)
             offset += nalLen
         }
-
-        let id = frameId
-        frameId &+= 1
-        let rtpTime = rtpTimestamp(sb.presentationTimeStamp)
-        let encrypted = crypt(annexB, frameId: id)
-        let packets = packetize(encrypted, frameId: id, isKey: isKey, rtpTime: rtpTime)
-        history[UInt8(truncatingIfNeeded: id)] = packets
-        history.removeValue(forKey: UInt8(truncatingIfNeeded: id &- 60))
-        for p in packets { udp?.send(content: p, completion: .idempotent) }
+        send(annexB, on: video, isKey: isKey, rtpTime: video.rtpTime((sb.presentationTimeStamp - clockStart).seconds))
         sentFrames += 1
     }
 
-    private func rtpTimestamp(_ t: CMTime) -> UInt32 {
-        UInt32(truncatingIfNeeded: Int64(((t - clockStart).seconds) * 90_000))
+    // MARK: - Áudio: PCM → Opus (20 ms) → RTP
+
+    private func handleAudio(_ sb: CMSampleBuffer) {
+        guard opus != nil, let fd = sb.formatDescription,
+              var asbd = CMAudioFormatDescriptionGetStreamBasicDescription(fd)?.pointee,
+              let format = AVAudioFormat(streamDescription: &asbd) else { return }
+        let frames = AVAudioFrameCount(CMSampleBufferGetNumSamples(sb))
+        guard frames > 0, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames) else { return }
+        buffer.frameLength = frames
+        guard CMSampleBufferCopyPCMDataIntoAudioBufferList(sb, at: 0, frameCount: Int32(frames),
+                                                           into: buffer.mutableAudioBufferList) == noErr,
+              let ch = buffer.floatChannelData else { return }
+        let n = Int(frames)
+        var interleaved = [Float](repeating: 0, count: n * 2)
+        let channels = Int(format.channelCount)
+        if format.isInterleaved {
+            let src = ch[0]
+            for i in 0..<n {
+                interleaved[i * 2] = src[i * channels]
+                interleaved[i * 2 + 1] = src[i * channels + min(1, channels - 1)]
+            }
+        } else {
+            let l = ch[0], r = ch[min(1, channels - 1)]
+            for i in 0..<n { interleaved[i * 2] = l[i]; interleaved[i * 2 + 1] = r[i] }
+        }
+        appendPCM(interleaved, at: (sb.presentationTimeStamp - clockStart).seconds)
     }
 
-    /// AES-128-CTR; nonce = aesIvMask XOR frame_id (big-endian nos bytes 8…11).
-    private func crypt(_ data: Data, frameId: UInt32) -> Data {
-        var nonce = aesIvMask
+    private func appendPCM(_ samples: [Float], at time: Double) {
+        if pcm.isEmpty { pcmStart = time }
+        pcm.append(contentsOf: samples)
+        rmsWindow.append(contentsOf: samples.prefix(2048))
+        let chunk = OpusEncoder.frameSamples * 2
+        while pcm.count >= chunk {
+            let frame = Array(pcm.prefix(chunk))
+            pcm.removeFirst(chunk)
+            if let packet = opus?.encode(frame) {
+                send(packet, on: audio, isKey: true, rtpTime: audio.rtpTime(pcmStart))
+                sentAudioFrames += 1
+            }
+            pcmStart += Double(OpusEncoder.frameSamples) / 48_000
+        }
+        logLevelIfNeeded()
+    }
+
+    /// Nível do som capturado no log (diagnóstico: 0 = nada chegando da captura).
+    private func logLevelIfNeeded() {
+        guard Date().timeIntervalSince(lastLevelLog) > 3, !rmsWindow.isEmpty else { return }
+        let rms = sqrt(rmsWindow.reduce(0) { $0 + $1 * $1 } / Float(rmsWindow.count))
+        log.notice("mirror: áudio rms=\(rms, format: .fixed(precision: 4)) quadros=\(self.sentAudioFrames)")
+        rmsWindow.removeAll(keepingCapacity: true)
+        lastLevelLog = Date()
+    }
+
+    // MARK: - Quadro → AES-CTR → RTP
+
+    private func send(_ frame: Data, on s: RtpStream, isKey: Bool, rtpTime: UInt32) {
+        let id = s.frameId
+        s.frameId &+= 1
+        let packets = s.packetize(s.crypt(frame, frameId: id), frameId: id, isKey: isKey, rtpTime: rtpTime)
+        s.history[UInt8(truncatingIfNeeded: id)] = packets
+        s.history.removeValue(forKey: UInt8(truncatingIfNeeded: id &- 100))
+        for p in packets { udp?.send(content: p, completion: .idempotent) }
+    }
+
+    // MARK: - RTCP
+
+    private func startSenderReports() {
+        let t = DispatchSource.makeTimerSource(queue: queue)
+        t.schedule(deadline: .now(), repeating: 0.5)
+        t.setEventHandler { [weak self] in
+            guard let self else { return }
+            let now = (CMClockGetTime(CMClockGetHostTimeClock()) - self.clockStart).seconds
+            self.udp?.send(content: self.video.senderReport(mediaTime: now), completion: .idempotent)
+            if self.opus != nil { self.udp?.send(content: self.audio.senderReport(mediaTime: now), completion: .idempotent) }
+        }
+        t.resume()
+        srTimer = t
+    }
+
+    private func receiveRTCP() {
+        udp?.receiveMessage { [weak self] data, _, _, error in
+            guard let self, error == nil else { return }
+            if let data { self.rtcpPackets += 1; self.handleRTCP(data) }
+            self.receiveRTCP()
+        }
+    }
+
+    /// Pacote RTCP composto: PLI (pede keyframe) e feedback "CAST" (ACK + NACK), roteados pelo SSRC de mídia.
+    private func handleRTCP(_ d: Data) {
+        let b = [UInt8](d)
+        var i = 0
+        while i + 4 <= b.count {
+            let fmt = b[i] & 0x1F, pt = b[i + 1]
+            let len = (Int(b[i + 2]) << 8 | Int(b[i + 3]) + 1) * 4
+            guard len > 0, i + len <= b.count else { return }
+            if pt == 206, len >= 12 {
+                let media = UInt32(b[i + 8]) << 24 | UInt32(b[i + 9]) << 16 | UInt32(b[i + 10]) << 8 | UInt32(b[i + 11])
+                let s = media == audio.ssrc ? audio : video
+                if fmt == 1, s === video { forceKeyFrame = true; keyframeRequests += 1 }       // PLI
+                if fmt == 15, len >= 20, b[i + 12] == 0x43, b[i + 13] == 0x41, b[i + 14] == 0x53, b[i + 15] == 0x54 {
+                    if s === audio { lastAckAudio = Int(b[i + 16]) } else { lastAckVideo = Int(b[i + 16]) }
+                    let losses = Int(b[i + 17])
+                    var j = i + 20
+                    for _ in 0..<losses where j + 4 <= i + len {
+                        retransmit(s, frame: b[j], packet: Int(b[j + 1]) << 8 | Int(b[j + 2]), mask: b[j + 3])
+                        j += 4
+                    }
+                }
+            }
+            i += len
+        }
+    }
+
+    private func retransmit(_ s: RtpStream, frame: UInt8, packet: Int, mask: UInt8) {
+        guard let packets = s.history[frame] else {
+            if s === video { forceKeyFrame = true }       // velho demais: recomeça do keyframe
+            return
+        }
+        if packet == 0xFFFF { packets.forEach { udp?.send(content: $0, completion: .idempotent) }; retransmits += packets.count; return }
+        var ids = [packet]
+        for bit in 0..<8 where mask & (1 << bit) != 0 { ids.append(packet + bit + 1) }
+        for id in ids where id < packets.count { udp?.send(content: packets[id], completion: .idempotent); retransmits += 1 }
+    }
+}
+
+/// Um fluxo RTP do Cast Streaming (vídeo ou áudio): SSRC, chave AES, numeração e histórico.
+private final class RtpStream {
+    let ssrc = UInt32.random(in: 1...0x00FF_FFFF)
+    let key: [UInt8] = (0..<16).map { _ in UInt8.random(in: 0...255) }
+    let ivMask: [UInt8] = (0..<16).map { _ in UInt8.random(in: 0...255) }
+    let payloadType: UInt8
+    let clockRate: Double
+    var frameId: UInt32 = 0
+    var sequence: UInt16 = 0
+    var packetCount: UInt32 = 0
+    var octetCount: UInt32 = 0
+    /// Pacotes dos últimos quadros, pra atender NACK.
+    var history: [UInt8: [Data]] = [:]
+
+    init(payloadType: UInt8, clockRate: Double) {
+        self.payloadType = payloadType
+        self.clockRate = clockRate
+    }
+
+    func rtpTime(_ seconds: Double) -> UInt32 { UInt32(truncatingIfNeeded: Int64(seconds * clockRate)) }
+
+    /// AES-128-CTR; nonce = ivMask XOR frame_id (big-endian nos bytes 8…11).
+    func crypt(_ data: Data, frameId: UInt32) -> Data {
+        var nonce = ivMask
         nonce[8] ^= UInt8(frameId >> 24 & 0xFF); nonce[9] ^= UInt8(frameId >> 16 & 0xFF)
         nonce[10] ^= UInt8(frameId >> 8 & 0xFF); nonce[11] ^= UInt8(frameId & 0xFF)
         var cryptor: CCCryptorRef?
         CCCryptorCreateWithMode(CCOperation(kCCEncrypt), CCMode(kCCModeCTR), CCAlgorithm(kCCAlgorithmAES), CCPadding(ccNoPadding),
-                                nonce, aesKey, aesKey.count, nil, 0, 0, CCModeOptions(kCCModeOptionCTR_BE), &cryptor)
+                                nonce, key, key.count, nil, 0, 0, CCModeOptions(kCCModeOptionCTR_BE), &cryptor)
         guard let cryptor else { return data }
         defer { CCCryptorRelease(cryptor) }
         var out = Data(count: data.count)
         var moved = 0
         out.withUnsafeMutableBytes { o in
-            data.withUnsafeBytes { i in
-                _ = CCCryptorUpdate(cryptor, i.baseAddress, data.count, o.baseAddress, data.count, &moved)
-            }
+            data.withUnsafeBytes { i in _ = CCCryptorUpdate(cryptor, i.baseAddress, data.count, o.baseAddress, data.count, &moved) }
         }
         return out
     }
 
     /// RTP (12 bytes) + cabeçalho Cast: [K|R|ext] [frame id] [packet id 16] [max packet id 16] [ref frame id].
-    private func packetize(_ payload: Data, frameId: UInt32, isKey: Bool, rtpTime: UInt32) -> [Data] {
+    func packetize(_ payload: Data, frameId: UInt32, isKey: Bool, rtpTime: UInt32) -> [Data] {
         let maxPayload = 1300
         let count = max(1, (payload.count + maxPayload - 1) / maxPayload)
         let refId = isKey ? frameId : frameId &- 1
@@ -298,7 +469,7 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             var p = Data(capacity: 1400)
             p.append(0x80)
             p.append((i == count - 1 ? 0x80 : 0) | payloadType)
-            p.append(UInt8(sequence >> 8)); p.append(UInt8(sequence & 0xFF))
+            p.append(bigEndian: sequence)
             sequence &+= 1
             p.append(bigEndian: rtpTime)
             p.append(bigEndian: ssrc)
@@ -316,70 +487,75 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         return packets
     }
 
-    // MARK: - RTCP
-
-    /// Sender Report: liga o relógio RTP ao relógio de parede pra TV calcular quando exibir cada quadro.
-    private func startSenderReports() {
-        let t = DispatchSource.makeTimerSource(queue: queue)
-        t.schedule(deadline: .now(), repeating: 0.5)
-        t.setEventHandler { [weak self] in self?.sendSenderReport() }
-        t.resume()
-        srTimer = t
-    }
-
-    private func sendSenderReport() {
+    /// Sender Report: liga o relógio RTP deste fluxo ao relógio de parede (a TV sincroniza vídeo e áudio por ele).
+    func senderReport(mediaTime: Double) -> Data {
         let now = Date().timeIntervalSince1970 + 2_208_988_800          // época NTP (1900)
-        let seconds = UInt32(truncatingIfNeeded: Int64(now))
-        let fraction = UInt32(truncatingIfNeeded: Int64((now - floor(now)) * 4_294_967_296))
         var sr = Data([0x80, 200, 0, 6])
         sr.append(bigEndian: ssrc)
-        sr.append(bigEndian: seconds)
-        sr.append(bigEndian: fraction)
-        sr.append(bigEndian: rtpTimestamp(CMClockGetTime(CMClockGetHostTimeClock())))
+        sr.append(bigEndian: UInt32(truncatingIfNeeded: Int64(now)))
+        sr.append(bigEndian: UInt32(truncatingIfNeeded: Int64((now - floor(now)) * 4_294_967_296)))
+        sr.append(bigEndian: rtpTime(mediaTime))
         sr.append(bigEndian: packetCount)
         sr.append(bigEndian: octetCount)
-        udp?.send(content: sr, completion: .idempotent)
+        return sr
+    }
+}
+
+/// PCM float 48 kHz estéreo → pacotes Opus de 20 ms (codificador nativo do macOS).
+private final class OpusEncoder {
+    static let frameSamples = 960
+    private var converter: AudioConverterRef?
+
+    init?() {
+        var input = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked, mBytesPerPacket: 8, mFramesPerPacket: 1,
+            mBytesPerFrame: 8, mChannelsPerFrame: 2, mBitsPerChannel: 32, mReserved: 0)
+        var output = AudioStreamBasicDescription(mSampleRate: 48_000, mFormatID: kAudioFormatOpus, mFormatFlags: 0,
+            mBytesPerPacket: 0, mFramesPerPacket: UInt32(Self.frameSamples), mBytesPerFrame: 0, mChannelsPerFrame: 2,
+            mBitsPerChannel: 0, mReserved: 0)
+        guard AudioConverterNew(&input, &output, &converter) == noErr, let converter else { return nil }
+        var rate: UInt32 = 128_000
+        AudioConverterSetProperty(converter, kAudioConverterEncodeBitRate, UInt32(MemoryLayout<UInt32>.size), &rate)
     }
 
-    private func receiveRTCP() {
-        udp?.receiveMessage { [weak self] data, _, _, error in
-            guard let self, error == nil else { return }
-            if let data { self.rtcpPackets += 1; self.handleRTCP(data) }
-            self.receiveRTCP()
-        }
+    deinit { if let converter { AudioConverterDispose(converter) } }
+
+    private struct Input {
+        var data: UnsafeMutableRawPointer
+        var bytes: UInt32
+        var used: Bool
     }
 
-    /// Pacote RTCP composto: procura PLI (pede keyframe) e o feedback "CAST" (ACK + NACK).
-    private func handleRTCP(_ d: Data) {
-        let b = [UInt8](d)
-        var i = 0
-        while i + 4 <= b.count {
-            let fmt = b[i] & 0x1F, pt = b[i + 1]
-            let len = (Int(b[i + 2]) << 8 | Int(b[i + 3]) + 1) * 4
-            guard len > 0, i + len <= b.count else { return }
-            if pt == 206, fmt == 1 { forceKeyFrame = true; keyframeRequests += 1 }   // PLI
-            if pt == 206, fmt == 15, len >= 20, b[i + 12] == 0x43, b[i + 13] == 0x41, b[i + 14] == 0x53, b[i + 15] == 0x54 {
-                ackedFrames = Int(b[i + 16])
-                let losses = Int(b[i + 17])
-                var j = i + 20
-                for _ in 0..<losses where j + 4 <= i + len {
-                    let frame = b[j]
-                    let packet = Int(b[j + 1]) << 8 | Int(b[j + 2])
-                    let mask = b[j + 3]
-                    retransmit(frame: frame, packet: packet, mask: mask)
-                    j += 4
+    /// `samples` = 960 quadros intercalados (L, R).
+    func encode(_ samples: [Float]) -> Data? {
+        guard let converter else { return nil }
+        var copy = samples
+        return copy.withUnsafeMutableBytes { raw -> Data? in
+            var input = Input(data: raw.baseAddress!, bytes: UInt32(raw.count), used: false)
+            var out = [UInt8](repeating: 0, count: 4000)
+            var desc = AudioStreamPacketDescription()
+            var packets: UInt32 = 1
+            let status: OSStatus = out.withUnsafeMutableBytes { outRaw in
+                var list = AudioBufferList(mNumberBuffers: 1, mBuffers: AudioBuffer(
+                    mNumberChannels: 2, mDataByteSize: UInt32(outRaw.count), mData: outRaw.baseAddress))
+                return withUnsafeMutablePointer(to: &input) { inputPtr in
+                    AudioConverterFillComplexBuffer(converter, { _, ioPackets, ioData, _, user in
+                        let ctx = user!.assumingMemoryBound(to: Input.self)
+                        if ctx.pointee.used { ioPackets.pointee = 0; return 1 }   // 1 = "acabou por agora"
+                        ioData.pointee.mNumberBuffers = 1
+                        ioData.pointee.mBuffers.mData = ctx.pointee.data
+                        ioData.pointee.mBuffers.mDataByteSize = ctx.pointee.bytes
+                        ioData.pointee.mBuffers.mNumberChannels = 2
+                        ioPackets.pointee = ctx.pointee.bytes / 8
+                        ctx.pointee.used = true
+                        return noErr
+                    }, inputPtr, &packets, &list, &desc)
                 }
             }
-            i += len
+            guard packets > 0, status == noErr || status == 1, desc.mDataByteSize > 0 else { return nil }
+            let start = Int(desc.mStartOffset)
+            return Data(out[start ..< start + Int(desc.mDataByteSize)])
         }
-    }
-
-    private func retransmit(frame: UInt8, packet: Int, mask: UInt8) {
-        guard let packets = history[frame] else { forceKeyFrame = true; return }   // velho demais: recomeça do keyframe
-        if packet == 0xFFFF { packets.forEach { udp?.send(content: $0, completion: .idempotent) }; return }
-        var ids = [packet]
-        for bit in 0..<8 where mask & (1 << bit) != 0 { ids.append(packet + bit + 1) }
-        for id in ids where id < packets.count { udp?.send(content: packets[id], completion: .idempotent); retransmits += 1 }
     }
 }
 
