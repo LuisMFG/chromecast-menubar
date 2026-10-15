@@ -103,6 +103,10 @@ final class CastStore: ObservableObject {
         didSet { UserDefaults.standard.set(mirrorAudio, forKey: "mirrorAudio") }
     }
     private var mirror: ScreenMirror?
+    private var streamer: CastStreamer?
+    private var streamerOffered = false
+    /// Modo do espelhamento em uso (instantâneo = Cast Streaming; compatível = HLS).
+    @Published private(set) var mirrorInstant = false
     private var mirrorShown = false
     static let mirrorTitle = String(localized: "Tela do Mac")
     @Published private(set) var dashboardPreview: NSImage?
@@ -179,6 +183,7 @@ final class CastStore: ObservableObject {
          tab: BrowserTab? = nil, recents: [RecentCast] = [], mirroring: Bool = false) {
         isPreview = true
         self.mirroring = mirroring
+        self.mirrorInstant = mirroring
         let room = String(localized: "Sala")
         devices = [CastDevice(id: "preview", name: room, model: "Chromecast", endpoint: .hostPort(host: "127.0.0.1", port: 8009))]
         selectedId = "preview"
@@ -400,6 +405,7 @@ final class CastStore: ObservableObject {
               let type = obj["type"] as? String else { return }
         if msg.namespace == CastNS.setup { return setupResponse(type, obj) }
         if msg.namespace == CastNS.youtube { return youtubeMessage(type, obj) }
+        if msg.namespace == CastStreamer.namespace { return streamingMessage(type, obj) }
         switch type {
         case "RECEIVER_STATUS":
             if let status = obj["status"] as? [String: Any] { receiverStatus(status) }
@@ -460,8 +466,18 @@ final class CastStore: ObservableObject {
         if dashboardOn, dashboardShown, newApp.appId != Self.defaultReceiver {
             endDashboard()
         }
-        if mirroring, mirrorShown, newApp.appId != Self.defaultReceiver {
+        if mirroring, mirrorShown, !mirrorInstant, newApp.appId != Self.defaultReceiver {
             endMirroring()
+        }
+        if mirroring, mirrorInstant {
+            if newApp.appId == CastStreamer.receiverApp, let st = streamer, !streamerOffered {
+                streamerOffered = true
+                mirrorShown = true
+                send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
+                channel?.send(to: newApp.transportId, ns: CastStreamer.namespace, st.offer(seqNum: Int.random(in: 1...100_000)))
+            } else if mirrorShown, newApp.appId != CastStreamer.receiverApp {
+                endMirroring()      // outra coisa assumiu a TV
+            }
         }
         if let load = pendingLoad, newApp.appId == Self.defaultReceiver, newApp.hasMedia {
             pendingLoad = nil
@@ -808,6 +824,7 @@ final class CastStore: ObservableObject {
 
     // MARK: - Espelhar a tela
 
+    /// Espelha a tela: primeiro o modo instantâneo (Cast Streaming, ~0,2 s); se o aparelho recusar, HLS (~4 s).
     func startMirroring() async {
         guard connected, !mirroring else { return }
         guard CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() else {
@@ -815,6 +832,56 @@ final class CastStore: ObservableObject {
             return
         }
         if dashboardOn { endDashboard() }
+        let st = CastStreamer()
+        st.onError = { [weak self] message in
+            Task { @MainActor in
+                self?.error = String(localized: "Espelhamento parou: \(message)")
+                self?.stopMirroring()
+            }
+        }
+        streamer = st
+        streamerOffered = false
+        mirroring = true
+        mirrorInstant = true
+        mirrorShown = false
+        castProgress = String(localized: "Preparando o espelhamento…")
+        send(to: "receiver-0", ns: CastNS.receiver, ["type": "LAUNCH", "appId": CastStreamer.receiverApp])
+        // sem resposta em 10 s: tenta o modo compatível
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(10))
+            guard let self, self.mirroring, self.mirrorInstant, self.castProgress != nil else { return }
+            self.fallbackToHLS()
+        }
+    }
+
+    private func streamingMessage(_ type: String, _ obj: [String: Any]) {
+        guard type == "ANSWER", mirroring, mirrorInstant, let st = streamer else { return }
+        guard obj["result"] as? String == "ok", let answer = obj["answer"] as? [String: Any],
+              let port = answer["udpPort"] as? Int, let host = channel?.remoteAddress else {
+            return fallbackToHLS()
+        }
+        Task {
+            do {
+                try await st.start(host: host, port: UInt16(port))
+                castProgress = nil
+            } catch {
+                castProgress = nil
+                endMirroring()
+                notice = String(localized: "Não consegui capturar a tela. Confira a permissão de Gravação de Tela em Ajustes do Sistema.")
+            }
+        }
+    }
+
+    private func fallbackToHLS() {
+        streamer?.stop(); streamer = nil
+        mirroring = false
+        mirrorInstant = false
+        Task { await startHLSMirroring() }
+    }
+
+    /// Plano B: HLS ao vivo pelo player padrão (~4 s de atraso, mas funciona em qualquer receptor).
+    private func startHLSMirroring() async {
+        guard connected, !mirroring else { return }
         guard let host = channel?.localAddress, let port = try? MediaServer.shared.start() else {
             error = String(localized: "Não consegui abrir o servidor local"); return
         }
@@ -835,6 +902,7 @@ final class CastStore: ObservableObject {
         }
         mirror = m
         mirroring = true
+        mirrorInstant = false
         mirrorShown = false
         castProgress = String(localized: "Preparando o espelhamento…")
         do {
@@ -847,7 +915,7 @@ final class CastStore: ObservableObject {
     }
 
     func stopMirroring() {
-        let showing = mirrorShown && app?.appId == Self.defaultReceiver
+        let showing = mirrorShown && (app?.appId == Self.defaultReceiver || app?.appId == CastStreamer.receiverApp)
         endMirroring()
         if showing { stopCasting() }
     }
@@ -855,6 +923,9 @@ final class CastStore: ObservableObject {
     private func endMirroring() {
         mirror?.stop()
         mirror = nil
+        streamer?.stop()
+        streamer = nil
+        streamerOffered = false
         mirroring = false
         mirrorShown = false
     }

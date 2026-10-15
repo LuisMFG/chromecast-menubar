@@ -178,7 +178,7 @@ private struct Header: View {
         guard store.connected else {
             return store.reconnecting ? String(localized: "Reconectando…") : String(localized: "Conectando…")
         }
-        if store.mirroring { return String(localized: "Espelhando a tela do Mac") }
+        if store.mirroring { return String(localized: "Espelhando a tela") }
         if store.dashboardOn { return String(localized: "Mostrando o painel") }
         guard let app = store.app else { return String(localized: "Pronto") }
         if app.isIdle { return String(localized: "Pronto para transmitir") }
@@ -233,7 +233,7 @@ private struct Header: View {
             Menu {
                 Button("Transmitir arquivo…") { pickFile() }
                 Toggle("Usar login do navegador (Instagram e X)", isOn: $store.useBrowserLogin)
-                Toggle("Som do Mac ao espelhar", isOn: $store.mirrorAudio)
+                Toggle("Som do Mac no modo compatível", isOn: $store.mirrorAudio)
                 Divider()
                 Button("Renomear…") { newName = store.displayName; renaming = true }
                 Button("Reiniciar Chromecast…") { confirmReboot = true }
@@ -650,7 +650,7 @@ private struct IdleHome: View {
                 Tile(symbol: "rectangle.on.rectangle", title: String(localized: "Espelhar"), tint: tint) {
                     Task { await store.startMirroring() }
                 }
-                .help(String(localized: "Mostra a tela do Mac na TV (atraso de alguns segundos)"))
+                .help(String(localized: "Mostra a tela do Mac na TV, quase sem atraso"))
             }
 
             if !store.recents.isEmpty {
@@ -808,14 +808,17 @@ private struct MirrorActive: View {
                             .background(Capsule().fill(.red))
                         Text("Espelhando a tela").font(.system(size: 14, weight: .semibold))
                     }
-                    Text("A TV mostra com alguns segundos de atraso.")
+                    Text(store.mirrorInstant ? String(localized: "Modo instantâneo — quase sem atraso.")
+                         : String(localized: "Modo compatível — alguns segundos de atraso."))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 Spacer()
             }
-            Label(store.mirrorAudio ? String(localized: "Som do Mac vai junto (abaixe o volume do Mac pra não ter eco)")
-                                     : String(localized: "Só imagem (o som fica no Mac)"),
-                  systemImage: store.mirrorAudio ? "speaker.wave.2" : "speaker.slash")
+            Label(store.mirrorInstant ? String(localized: "O som continua saindo do Mac, em sincronia com a TV.")
+                  : store.mirrorAudio ? String(localized: "Som do Mac vai junto (abaixe o volume do Mac pra não ter eco)")
+                  : String(localized: "Só imagem (o som fica no Mac)"),
+                  systemImage: store.mirrorInstant ? "speaker.wave.2" : store.mirrorAudio ? "speaker.wave.2" : "speaker.slash")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Button(action: store.stopMirroring) {

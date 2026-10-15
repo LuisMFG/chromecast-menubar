@@ -24,7 +24,6 @@
 /* Menu */
 "Transmitir arquivo…" = "Cast a file…";
 "Usar login do navegador (Instagram e X)" = "Use browser sign-in (Instagram and X)";
-"Som do Mac ao espelhar" = "Send Mac audio when mirroring";
 "Renomear…" = "Rename…";
 "Reiniciar Chromecast…" = "Restart Chromecast…";
 "Reconectar" = "Reconnect";
@@ -70,14 +69,17 @@
 "Liga a TV e troca a entrada (HDMI-CEC)" = "Turns the TV on and switches input (HDMI-CEC)";
 "Vídeo, música ou foto do Mac" = "Video, music or photo from your Mac";
 "Espelhar" = "Mirror";
-"Mostra a tela do Mac na TV (atraso de alguns segundos)" = "Shows your Mac screen on the TV (a few seconds behind)";
 "Recentes" = "Recent";
 "Dica: arraste um arquivo ou link pra cá, ou use ⌃⌥T no navegador." = "Tip: drop a file or link here, or press ⌃⌥T in your browser.";
 
 /* Espelhar */
+"Modo instantâneo — quase sem atraso." = "Instant mode — almost no delay.";
+"Modo compatível — alguns segundos de atraso." = "Compatibility mode — a few seconds behind.";
+"O som continua saindo do Mac, em sincronia com a TV." = "Sound keeps playing on the Mac, in sync with the TV.";
+"Mostra a tela do Mac na TV, quase sem atraso" = "Shows your Mac screen on the TV with almost no delay";
+"Som do Mac no modo compatível" = "Send Mac audio in compatibility mode";
 "AO VIVO" = "LIVE";
 "Espelhando a tela" = "Mirroring screen";
-"A TV mostra com alguns segundos de atraso." = "The TV runs a few seconds behind.";
 "Som do Mac vai junto (abaixe o volume do Mac pra não ter eco)" = "Mac audio goes too (lower your Mac's volume to avoid echo)";
 "Só imagem (o som fica no Mac)" = "Video only (audio stays on the Mac)";
 "Parar de espelhar" = "Stop mirroring";
