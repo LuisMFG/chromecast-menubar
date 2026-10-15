@@ -76,6 +76,7 @@ enum CastNS {
     /// API local de configuração tunelada no Cast (encontrada no app Google Home com REA).
     /// Formato: {"type": "<rota>", "request_id": n, "data": {...}} → {"response_code": 200, "data": ...}
     static let setup = "urn:x-cast:com.google.cast.setup"
+    static let youtube = "urn:x-cast:com.google.youtube.mdx"
 }
 
 /// Conexão TLS com o Chromecast. O certificado do aparelho é autoassinado,

@@ -45,7 +45,8 @@ struct MediaState: Equatable {
     var isPlaying: Bool { playerState == "PLAYING" || playerState == "BUFFERING" }
 
     func position(at now: Date) -> Double {
-        let t = isPlaying ? currentTime + now.timeIntervalSince(updatedAt) * rate : currentTime
+        // só avança durante PLAYING: em BUFFERING o tempo fica parado (o YouTube na 1ª geração demora pra começar)
+        let t = playerState == "PLAYING" ? currentTime + now.timeIntervalSince(updatedAt) * rate : currentTime
         if let duration, duration > 0 { return min(max(t, 0), duration) }
         return max(t, 0)
     }
@@ -63,7 +64,18 @@ final class CastStore: ObservableObject {
     @Published var volumeStep: Double = 0.05
     @Published var artworkTint: Color?
     @Published private(set) var artworkImage: NSImage?
-    @Published var error: String?
+    /// Erros somem sozinhos depois de alguns segundos (os de conexão continuam até reconectar).
+    @Published var error: String? {
+        didSet {
+            errorClear?.cancel()
+            guard error != nil, connected else { return }
+            errorClear = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(8))
+                if !Task.isCancelled { self?.error = nil }
+            }
+        }
+    }
+    private var errorClear: Task<Void, Never>?
     @Published var info: DeviceInfo?
     /// Texto de progresso ao preparar uma transmissão ("Convertendo 40%", "Abrindo…")
     @Published var castProgress: String?
@@ -86,6 +98,10 @@ final class CastStore: ObservableObject {
     private let weather = WeatherService()
     static let dashboardTitle = "Chromecast — painel"
     static let defaultReceiver = "CC1AD845"
+    static let youtubeApp = "233637DE"
+    private var pendingYouTube: YouTubeLink?
+    private var youtubeTransportAsked: String?
+    private let lounge = YouTubeLounge()
 
     // Timer de sono
     enum SleepMode: Equatable { case duration, endOfEpisode }
@@ -236,6 +252,7 @@ final class CastStore: ObservableObject {
         guard let obj = try? JSONSerialization.jsonObject(with: Data(msg.payload.utf8)) as? [String: Any],
               let type = obj["type"] as? String else { return }
         if msg.namespace == CastNS.setup { return setupResponse(type, obj) }
+        if msg.namespace == CastNS.youtube { return youtubeMessage(type, obj) }
         switch type {
         case "RECEIVER_STATUS":
             if let status = obj["status"] as? [String: Any] { receiverStatus(status) }
@@ -273,6 +290,12 @@ final class CastStore: ObservableObject {
             mediaTransport = newApp.transportId
             send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
             send(to: newApp.transportId, ns: CastNS.media, ["type": "GET_STATUS"])
+        }
+        if pendingYouTube != nil, newApp.appId == Self.youtubeApp, !newApp.transportId.isEmpty,
+           youtubeTransportAsked != newApp.transportId {
+            youtubeTransportAsked = newApp.transportId
+            send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
+            channel?.send(to: newApp.transportId, ns: CastNS.youtube, ["type": "getMdxSessionStatus"])
         }
         if pendingTurnOn, newApp.appId == Self.defaultReceiver {
             pendingTurnOn = false
@@ -407,6 +430,7 @@ final class CastStore: ObservableObject {
     /// Arquivo local ou link http(s). Vídeos fora do padrão da 1ª geração são convertidos antes.
     func cast(_ url: URL) async {
         guard connected else { error = String(localized: "Chromecast desconectado"); return }
+        if let yt = YouTubeLink(url) { return castYouTube(yt) }
         if !url.isFileURL {
             guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
             return load(contentURL: url.absoluteString, mime: MediaServer.mime(for: url), title: url.lastPathComponent)
@@ -436,6 +460,45 @@ final class CastStore: ObservableObject {
         let path = MediaServer.shared.publish(file: file)
         load(contentURL: "http://\(host):\(port)\(path)", mime: MediaServer.mime(for: file),
              title: url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Abre o app do YouTube no Chromecast e manda o vídeo pela Lounge API.
+    func castYouTube(_ link: YouTubeLink) {
+        if dashboardOn { endDashboard() }
+        pendingYouTube = link
+        youtubeTransportAsked = nil
+        castProgress = String(localized: "Abrindo o YouTube…")
+        if let a = app, a.appId == Self.youtubeApp, !a.transportId.isEmpty {
+            youtubeTransportAsked = a.transportId
+            send(to: a.transportId, ns: CastNS.connection, ["type": "CONNECT"])
+            channel?.send(to: a.transportId, ns: CastNS.youtube, ["type": "getMdxSessionStatus"])
+        } else {
+            send(to: "receiver-0", ns: CastNS.receiver, ["type": "LAUNCH", "appId": Self.youtubeApp])
+        }
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(25))
+            if self?.pendingYouTube == link {
+                self?.pendingYouTube = nil
+                self?.castProgress = nil
+                self?.error = String(localized: "O YouTube não respondeu no Chromecast")
+            }
+        }
+    }
+
+    private func youtubeMessage(_ type: String, _ obj: [String: Any]) {
+        guard type == "mdxSessionStatus", let link = pendingYouTube,
+              let screenId = (obj["data"] as? [String: Any])?["screenId"] as? String else { return }
+        pendingYouTube = nil
+        castProgress = String(localized: "Enviando o vídeo…")
+        Task {
+            do {
+                try await lounge.play(screenId: screenId, link: link, senderName: Host.current().localizedName ?? "Mac")
+                castProgress = nil
+            } catch {
+                castProgress = nil
+                self.error = error.localizedDescription
+            }
+        }
     }
 
     /// Abre o player padrão do Chromecast (se preciso) e manda carregar a mídia.

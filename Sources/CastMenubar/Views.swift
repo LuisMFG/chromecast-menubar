@@ -575,7 +575,7 @@ private struct Footer: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            if let err = store.error, !store.connected {
+            if let err = store.error {
                 Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
                 Text(err).lineLimit(1).truncationMode(.tail)
             } else if let info = store.info {
@@ -617,13 +617,13 @@ private struct Footer: View {
             Text("O novo nome aparece no celular, no Chrome e aqui.")
         }
         .alert("Transmitir link", isPresented: $askingLink) {
-            TextField("https://…/video.mp4", text: $link)
+            TextField("https://youtu.be/…", text: $link)
             Button("Cancelar", role: .cancel) {}
             Button("Transmitir") {
                 if let url = URL(string: link.trimmingCharacters(in: .whitespaces)) { Task { await store.cast(url) } }
             }
         } message: {
-            Text("Link direto para vídeo, música, imagem ou HLS (.m3u8).")
+            Text("YouTube ou link direto para vídeo, música, imagem ou HLS (.m3u8).")
         }
         .confirmationDialog("Reiniciar o Chromecast?", isPresented: $confirmReboot) {
             Button("Reiniciar", role: .destructive) { store.reboot() }
