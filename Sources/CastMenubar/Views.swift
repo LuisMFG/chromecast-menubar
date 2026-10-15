@@ -1,7 +1,9 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-private let defaultTint = Color(red: 0.55, green: 0.55, blue: 1.0)
+private let defaultTint = Color(red: 0.56, green: 0.56, blue: 1.0)
+private let panelWidth: CGFloat = 340
+private let inner: CGFloat = panelWidth - 32
 
 // MARK: - Raiz
 
@@ -12,74 +14,47 @@ struct RootView: View {
     private var tint: Color { store.artworkTint ?? defaultTint }
 
     var body: some View {
-        VStack(spacing: 16) {
-            Header()
-            if let p = store.castProgress {
-                HStack(spacing: 8) {
-                    ProgressView().controlSize(.small)
-                    Text(p).font(.system(size: 11, weight: .medium))
-                    Spacer()
-                }
-                .padding(.horizontal, 12).frame(height: 34)
-                .background(RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.15)))
-                .transition(.move(edge: .top).combined(with: .opacity))
-            }
+        VStack(spacing: 12) {
+            Header(tint: tint)
+            Banners(tint: tint)
+
             if !store.connected {
                 Searching()
             } else if store.dashboardOn {
                 DashboardActive(tint: tint)
             } else if let media = store.media {
-                NowPlaying(media: media, appName: store.app?.name ?? "", tint: tint)
+                NowPlayingCard(media: media, tint: tint)
             } else if let app = store.app, !app.isIdle {
-                AppOnly(app: app, tint: tint)
-            } else {
-                Idle(tint: tint)
+                AppOnlyCard(app: app, tint: tint)
             }
+
             if store.connected {
+                SendBar(tint: tint)
+                if !store.isCasting, !store.dashboardOn { IdleHome(tint: tint) }
                 VolumeRow(tint: tint)
                 if store.isCasting, !store.dashboardOn { SleepRow(tint: tint) }
             }
             Footer()
         }
         .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 12)
-        .frame(width: 312)
-        .background {
-            ZStack {
-                Glass()
-                Color.black.opacity(0.45)
-                RadialGradient(colors: [tint.opacity(store.isCasting ? 0.32 : 0.12), .clear],
-                               center: UnitPoint(x: 0.5, y: 0.3), startRadius: 0, endRadius: 300)
-            }
-            .animation(.easeInOut(duration: 0.6), value: store.artworkTint)
-        }
-        .overlay {
-            if dropTargeted {
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
-                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.black.opacity(0.55)))
-                    .overlay {
-                        VStack(spacing: 8) {
-                            Image(systemName: "tv.and.mediabox").font(.system(size: 30, weight: .light))
-                            Text("Solte para tocar na TV").font(.system(size: 13, weight: .semibold))
-                        }
-                        .foregroundStyle(tint)
-                    }
-                    .padding(8)
-                    .transition(.opacity)
-            }
-        }
+        .padding(.top, 14)
+        .padding(.bottom, 10)
+        .frame(width: panelWidth)
+        .background { Backdrop(tint: tint) }
+        .overlay { if dropTargeted { DropOverlay(tint: tint) } }
         .onDrop(of: [.fileURL, .url], isTargeted: $dropTargeted, perform: handleDrop)
         .animation(.snappy, value: dropTargeted)
         .animation(.snappy, value: store.castProgress)
+        .animation(.snappy, value: store.notice)
+        .animation(.snappy, value: store.media == nil)
         .environment(\.colorScheme, .dark)
         .tint(tint)
-        .task { store.requestStatus() }
+        .task {
+            store.requestStatus()
+            await store.refreshBrowserTab()
+        }
     }
-}
 
-extension RootView {
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
         guard let p = providers.first else { return false }
         if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
@@ -97,16 +72,59 @@ extension RootView {
     }
 }
 
+/// Vidro + capa desfocada (ou o tom da capa) atrás de tudo.
+private struct Backdrop: View {
+    @EnvironmentObject var store: CastStore
+    let tint: Color
+    var body: some View {
+        ZStack {
+            Glass()
+            Color.black.opacity(0.42)
+            if let img = store.artworkImage, store.isCasting, !SnapshotMode.isOn {
+                Image(nsImage: img).resizable().aspectRatio(contentMode: .fill)
+                    .blur(radius: 60).opacity(0.35)
+                    .frame(width: panelWidth).clipped()
+            }
+            RadialGradient(colors: [tint.opacity(store.isCasting ? 0.30 : 0.12), .clear],
+                           center: UnitPoint(x: 0.5, y: 0.25), startRadius: 0, endRadius: 320)
+        }
+        .animation(.easeInOut(duration: 0.6), value: store.artworkTint)
+    }
+}
+
+private struct DropOverlay: View {
+    let tint: Color
+    var body: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .strokeBorder(tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+            .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.black.opacity(0.6)))
+            .overlay {
+                VStack(spacing: 8) {
+                    Image(systemName: "tv.and.mediabox").font(.system(size: 32, weight: .light))
+                    Text("Solte para tocar na TV").font(.system(size: 14, weight: .semibold))
+                    Text("Vídeo, música, foto ou link").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                .foregroundStyle(tint)
+            }
+            .padding(6)
+            .transition(.opacity)
+    }
+}
+
 // MARK: - Cabeçalho
 
 private struct Header: View {
     @EnvironmentObject var store: CastStore
+    let tint: Color
+    @State private var renaming = false
+    @State private var newName = ""
+    @State private var confirmReboot = false
 
     private var status: String {
         guard store.connected else { return String(localized: "Desconectado") }
         if store.dashboardOn { return String(localized: "Mostrando o painel da casa") }
-        guard let app = store.app else { return String(localized: "Pronto para transmitir") }
-        if app.isIdle { return String(localized: "Tela de fundo") }
+        guard let app = store.app else { return String(localized: "Pronto") }
+        if app.isIdle { return String(localized: "Pronto para transmitir") }
         if let m = store.media {
             return m.isPlaying ? String(localized: "Tocando no \(app.name)") : String(localized: "Pausado no \(app.name)")
         }
@@ -115,121 +133,330 @@ private struct Header: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "tv")
-                .font(.system(size: 15, weight: .semibold))
+            Image(systemName: store.isCasting ? "tv.fill" : "tv")
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundStyle(store.isCasting ? tint : .primary)
                 .frame(width: 34, height: 34)
-                .background(Circle().fill(.white.opacity(0.08)))
-            VStack(alignment: .leading, spacing: 2) {
+                .background(Circle().fill(store.isCasting ? tint.opacity(0.18) : .white.opacity(0.08)))
+
+            VStack(alignment: .leading, spacing: 1) {
                 if store.devices.count > 1 {
                     Menu(store.displayName) {
                         ForEach(store.devices) { d in Button(d.name) { store.selectedId = d.id } }
                     }
                     .menuStyle(.borderlessButton).fixedSize()
-                    .font(.system(size: 15, weight: .semibold))
+                    .font(.system(size: 14, weight: .semibold))
                 } else {
-                    Text(store.displayName).font(.system(size: 15, weight: .semibold))
+                    Text(store.displayName).font(.system(size: 14, weight: .semibold)).lineLimit(1)
                 }
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(store.connected ? (store.isCasting ? Color.accentColor : .green) : .orange)
+                        .fill(store.connected ? (store.isCasting ? tint : .green) : .orange)
                         .frame(width: 6, height: 6)
                     Text(status).lineLimit(1)
                 }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
             }
-            Spacer()
+            Spacer(minLength: 6)
+
             if store.isCasting {
                 Button(action: store.stopCasting) {
-                    Image(systemName: "stop.fill")
-                        .font(.system(size: 11, weight: .bold))
-                        .frame(width: 30, height: 30)
-                        .background(Circle().fill(.white.opacity(0.08)))
-                        .contentShape(Circle())
+                    Label("Parar", systemImage: "stop.fill")
+                        .font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 10).frame(height: 26)
+                        .background(Capsule().fill(.white.opacity(0.1)))
+                        .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .help(String(localized: "Parar transmissão"))
             }
+
+            Menu {
+                Button("Transmitir arquivo…") { pickFile() }
+                Divider()
+                Button("Renomear…") { newName = store.displayName; renaming = true }
+                Button("Reiniciar Chromecast…") { confirmReboot = true }
+                Button("Reconectar") { store.connect() }
+                if !store.recents.isEmpty { Button("Limpar recentes") { store.clearRecents() } }
+                Divider()
+                Button("Fechar app") { NSApp.terminate(nil) }.keyboardShortcut("q")
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.system(size: 12, weight: .bold))
+                    .frame(width: 26, height: 26)
+                    .background(Circle().fill(.white.opacity(0.08)))
+            }
+            .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
         }
+        .alert("Renomear Chromecast", isPresented: $renaming) {
+            TextField("Nome", text: $newName)
+            Button("Cancelar", role: .cancel) {}
+            Button("Salvar") { store.rename(to: newName) }
+        } message: {
+            Text("O novo nome aparece no celular, no navegador e aqui.")
+        }
+        .confirmationDialog("Reiniciar o Chromecast?", isPresented: $confirmReboot) {
+            Button("Reiniciar", role: .destructive) { store.reboot() }
+            Button("Cancelar", role: .cancel) {}
+        } message: {
+            Text("A transmissão atual é interrompida e o aparelho volta em cerca de 1 minuto.")
+        }
+    }
+
+    private func pickFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.movie, .audio, .image]
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url { Task { await store.cast(url) } }
+    }
+}
+
+// MARK: - Avisos
+
+private struct Banners: View {
+    @EnvironmentObject var store: CastStore
+    let tint: Color
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if let p = store.castProgress {
+                banner(icon: nil, text: p, color: tint, dismiss: nil)
+            }
+            if let n = store.notice {
+                banner(icon: "info.circle.fill", text: n, color: tint) { store.notice = nil }
+            }
+            if let e = store.error, store.connected {
+                banner(icon: "exclamationmark.triangle.fill", text: e, color: .orange) { store.error = nil }
+            }
+        }
+    }
+
+    private func banner(icon: String?, text: String, color: Color, dismiss: (() -> Void)?) -> some View {
+        HStack(alignment: .top, spacing: 8) {
+            if let icon {
+                Image(systemName: icon).foregroundStyle(color).font(.system(size: 12))
+            } else {
+                ProgressView().controlSize(.mini).padding(.top, 1)
+            }
+            Text(text)
+                .font(.system(size: 11.5, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if let dismiss {
+                Button(action: dismiss) { Image(systemName: "xmark").font(.system(size: 9, weight: .bold)) }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+            }
+        }
+        .padding(.horizontal, 12).padding(.vertical, 9)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(color.opacity(0.14)))
+        .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous).stroke(color.opacity(0.25)))
+        .transition(.move(edge: .top).combined(with: .opacity))
+    }
+}
+
+// MARK: - Enviar para a TV
+
+private struct SendBar: View {
+    @EnvironmentObject var store: CastStore
+    let tint: Color
+    @State private var link = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "link")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                TextField("Cole um link pra transmitir", text: $link)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .focused($focused)
+                    .onSubmit(send)
+                if link.isEmpty {
+                    Button("Colar", action: pasteAndSend)
+                        .buttonStyle(.plain)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(tint)
+                        .help(String(localized: "Colar o link copiado e transmitir"))
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "arrow.up.circle.fill").font(.system(size: 18)).foregroundStyle(tint)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 36)
+            .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(focused ? 0.1 : 0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
+                .stroke(focused ? tint.opacity(0.6) : .white.opacity(0.06)))
+
+            if let tab = store.browserTab {
+                BrowserTabRow(tab: tab, tint: tint)
+            }
+        }
+    }
+
+    private func send() {
+        let text = link.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let url = URL(string: text), url.scheme != nil else { return }
+        link = ""
+        focused = false
+        Task { await store.cast(url) }
+    }
+
+    private func pasteAndSend() {
+        guard let s = NSPasteboard.general.string(forType: .string)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              let url = URL(string: s), url.scheme?.hasPrefix("http") == true else {
+            store.notice = String(localized: "A área de transferência não tem um link.")
+            return
+        }
+        Task { await store.cast(url) }
+    }
+}
+
+private struct BrowserTabRow: View {
+    @EnvironmentObject var store: CastStore
+    let tab: BrowserTab
+    let tint: Color
+
+    private var isYouTube: Bool { YouTubeLink(tab.url) != nil }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(isYouTube ? Color.red.opacity(0.9) : .white.opacity(0.1))
+                Image(systemName: isYouTube ? "play.fill" : "globe")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.white)
+            }
+            .frame(width: 30, height: 30)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Aba do \(tab.browser)")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Text(tab.title)
+                    .font(.system(size: 12, weight: .medium))
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button { Task { await store.castBrowserTab() } } label: {
+                Text("Transmitir")
+                    .font(.system(size: 11, weight: .bold))
+                    .foregroundStyle(.black)
+                    .padding(.horizontal, 11).frame(height: 26)
+                    .background(Capsule().fill(tint))
+            }
+            .buttonStyle(.plain)
+            .help(String(localized: "Manda esta aba para a TV (⌃⌥T de qualquer lugar)"))
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(0.05)))
     }
 }
 
 // MARK: - Tocando agora
 
-private struct NowPlaying: View {
+private struct NowPlayingCard: View {
     @EnvironmentObject var store: CastStore
     let media: MediaState
-    let appName: String
     let tint: Color
 
-    var body: some View {
-        VStack(spacing: 14) {
-            Artwork(url: media.artwork, tint: tint)
+    private var appName: String { store.app?.name ?? "" }
+    private var isYouTube: Bool { store.app?.appId == CastStore.youtubeApp }
+    private var isImage: Bool { media.duration == nil && !media.canSeek && media.playerState == "PAUSED" }
 
-            VStack(spacing: 3) {
+    var body: some View {
+        VStack(spacing: 12) {
+            ZStack(alignment: .topLeading) {
+                Artwork(url: media.artwork, tint: tint)
+                AppBadge(name: isYouTube ? "YouTube" : appName == "Default Media Receiver" ? String(localized: "Do Mac") : appName,
+                         youtube: isYouTube)
+                    .padding(10)
+            }
+
+            VStack(alignment: .leading, spacing: 3) {
                 Text(media.title ?? appName)
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(2)
-                    .multilineTextAlignment(.center)
                 if let sub = media.subtitle, !sub.isEmpty {
-                    Text(sub)
-                        .font(.system(size: 12))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+                    Text(sub).font(.system(size: 12)).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
-            .frame(maxWidth: .infinity)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             if media.duration != nil, media.canSeek {
                 Scrubber(media: media, tint: tint)
             }
 
-            HStack(spacing: 28) {
-                RoundIcon(symbol: "gobackward.10", size: 40) { store.skip(-10) }
-                    .disabled(!media.canSeek)
-                    .keyboardShortcut(.leftArrow, modifiers: [])
-                Button(action: store.togglePlay) {
-                    Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
-                        .font(.system(size: 22, weight: .bold))
-                        .contentTransition(.symbolEffect(.replace))
-                        .foregroundStyle(.black)
-                        .frame(width: 58, height: 58)
-                        .background(Circle().fill(tint.gradient))
-                        .shadow(color: tint.opacity(0.5), radius: 12)
-                        .contentShape(Circle())
+            if !isImage {
+                HStack(spacing: 30) {
+                    RoundIcon(symbol: "gobackward.10", size: 38) { store.skip(-10) }
+                        .disabled(!media.canSeek).opacity(media.canSeek ? 1 : 0.35)
+                        .keyboardShortcut(.leftArrow, modifiers: [])
+                    Button(action: store.togglePlay) {
+                        Image(systemName: media.isPlaying ? "pause.fill" : "play.fill")
+                            .font(.system(size: 21, weight: .bold))
+                            .contentTransition(.symbolEffect(.replace))
+                            .foregroundStyle(.black)
+                            .frame(width: 54, height: 54)
+                            .background(Circle().fill(tint.gradient))
+                            .shadow(color: tint.opacity(0.5), radius: 12)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .keyboardShortcut(.space, modifiers: [])
+                    RoundIcon(symbol: "goforward.30", size: 38) { store.skip(30) }
+                        .disabled(!media.canSeek).opacity(media.canSeek ? 1 : 0.35)
+                        .keyboardShortcut(.rightArrow, modifiers: [])
                 }
-                .buttonStyle(.plain)
-                .disabled(!media.canPause)
-                .keyboardShortcut(.space, modifiers: [])
-                RoundIcon(symbol: "goforward.30", size: 40) { store.skip(30) }
-                    .disabled(!media.canSeek)
-                    .keyboardShortcut(.rightArrow, modifiers: [])
+                .padding(.top, 2)
             }
         }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 18, style: .continuous).fill(.white.opacity(0.06)))
+        .overlay(RoundedRectangle(cornerRadius: 18, style: .continuous).stroke(.white.opacity(0.07)))
+        .transition(.opacity.combined(with: .scale(scale: 0.97)))
+    }
+}
+
+private struct AppBadge: View {
+    let name: String
+    let youtube: Bool
+    var body: some View {
+        HStack(spacing: 5) {
+            if youtube {
+                Image(systemName: "play.rectangle.fill").foregroundStyle(.red)
+            }
+            Text(name).lineLimit(1)
+        }
+        .font(.system(size: 10.5, weight: .bold))
+        .padding(.horizontal, 8).frame(height: 22)
+        .background(Capsule().fill(.black.opacity(0.55)))
+        .overlay(Capsule().stroke(.white.opacity(0.12)))
     }
 }
 
 private struct Artwork: View {
     let url: URL?
     let tint: Color
-
     var body: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 14, style: .continuous)
-                .fill(LinearGradient(colors: [tint.opacity(0.45), tint.opacity(0.12)], startPoint: .topLeading, endPoint: .bottomTrailing))
-                .overlay(Image(systemName: "play.tv").font(.system(size: 30, weight: .light)).foregroundStyle(.white.opacity(0.6)))
+            LinearGradient(colors: [tint.opacity(0.5), tint.opacity(0.12)], startPoint: .topLeading, endPoint: .bottomTrailing)
+            Image(systemName: "play.tv").font(.system(size: 30, weight: .light)).foregroundStyle(.white.opacity(0.55))
             if let url {
                 AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image.resizable().aspectRatio(contentMode: .fill).transition(.opacity)
-                    }
+                    if let image = phase.image { image.resizable().aspectRatio(contentMode: .fill).transition(.opacity) }
                 }
             }
         }
-        .frame(width: 280, height: 158)
-        .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.1)))
-        .shadow(color: tint.opacity(0.35), radius: 18, y: 8)
+        .frame(width: inner - 24, height: (inner - 24) * 9 / 16)
+        .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.08)))
     }
 }
 
@@ -244,14 +471,13 @@ private struct Scrubber: View {
         TimelineView(.periodic(from: .now, by: 0.5)) { ctx in
             let duration = max(media.duration ?? 1, 1)
             let pos = dragging ?? media.position(at: ctx.date)
-            VStack(spacing: 5) {
+            VStack(spacing: 4) {
                 GeometryReader { geo in
                     let w = geo.size.width
                     ZStack(alignment: .leading) {
-                        Capsule().fill(.white.opacity(0.12))
+                        Capsule().fill(.white.opacity(0.14))
                         Capsule().fill(tint).frame(width: max(0, w * pos / duration))
-                        Circle().fill(.white)
-                            .frame(width: 12, height: 12)
+                        Circle().fill(.white).frame(width: 12, height: 12)
                             .offset(x: w * pos / duration - 6)
                             .opacity(hovering || dragging != nil ? 1 : 0)
                     }
@@ -284,68 +510,155 @@ private struct Scrubber: View {
     }
 }
 
-// MARK: - Outros estados
-
-private struct AppOnly: View {
+private struct AppOnlyCard: View {
     let app: ReceiverApp
     let tint: Color
     var body: some View {
-        VStack(spacing: 10) {
+        HStack(spacing: 12) {
             Image(systemName: "play.tv.fill")
-                .font(.system(size: 34, weight: .light))
+                .font(.system(size: 20, weight: .light))
                 .foregroundStyle(tint)
-                .frame(width: 280, height: 120)
-                .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(tint.opacity(0.12)))
-            Text(app.name).font(.system(size: 15, weight: .semibold))
-            Text(app.statusText.isEmpty ? String(localized: "Este app não expõe controles de mídia.") : app.statusText)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+                .frame(width: 48, height: 48)
+                .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(tint.opacity(0.14)))
+            VStack(alignment: .leading, spacing: 2) {
+                Text(app.name).font(.system(size: 14, weight: .semibold))
+                Text(app.statusText.isEmpty ? String(localized: "Este app não expõe controles de mídia.") : app.statusText)
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
         }
+        .padding(12)
+        .background(RoundedRectangle(cornerRadius: 16, style: .continuous).fill(.white.opacity(0.06)))
     }
 }
 
-private struct Idle: View {
+// MARK: - Tela inicial (nada tocando)
+
+private struct IdleHome: View {
     @EnvironmentObject var store: CastStore
     let tint: Color
+
     var body: some View {
-        VStack(spacing: 10) {
-            IdleTV(tint: tint)
-            Text("Nada transmitindo").font(.system(size: 14, weight: .semibold))
-            Text("Transmita do celular ou do Chrome, ou solte um arquivo aqui.")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
-                ActionButton(symbol: "rectangle.3.group", title: String(localized: "Painel da casa"), tint: tint,
-                             action: store.startDashboard)
-                ActionButton(symbol: "power", title: String(localized: "Ligar TV"), tint: tint,
-                             action: store.turnOnTV)
+                Tile(symbol: "rectangle.3.group", title: String(localized: "Painel"), tint: tint, action: store.startDashboard)
+                    .help(String(localized: "Relógio e clima na TV"))
+                Tile(symbol: "power", title: String(localized: "Ligar TV"), tint: tint, action: store.turnOnTV)
+                    .help(String(localized: "Liga a TV e troca a entrada (HDMI-CEC)"))
+                Tile(symbol: "folder", title: String(localized: "Arquivo"), tint: tint, action: pickFile)
+                    .help(String(localized: "Vídeo, música ou foto do Mac"))
             }
-            .padding(.top, 4)
+
+            if !store.recents.isEmpty {
+                Text("Recentes")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 2)
+                VStack(spacing: 2) {
+                    ForEach(store.recents.prefix(4)) { r in RecentRow(item: r, tint: tint) }
+                }
+            } else {
+                HStack(spacing: 8) {
+                    Image(systemName: "arrow.down.doc").foregroundStyle(.secondary)
+                    Text("Dica: arraste um arquivo ou link pra cá, ou use ⌃⌥T no navegador.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                .padding(.top, 2)
+            }
         }
-        .padding(.vertical, 6)
+    }
+
+    private func pickFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.movie, .audio, .image]
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url { Task { await store.cast(url) } }
     }
 }
 
-private struct ActionButton: View {
+private struct Tile: View {
     let symbol: String
     let title: String
     let tint: Color
     let action: () -> Void
+    @State private var hover = false
     var body: some View {
         Button(action: action) {
-            HStack(spacing: 6) {
-                Image(systemName: symbol).font(.system(size: 11, weight: .bold))
-                Text(title).font(.system(size: 11.5, weight: .semibold))
+            VStack(spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 15, weight: .semibold)).foregroundStyle(tint)
+                Text(title).font(.system(size: 11, weight: .semibold))
             }
-            .frame(maxWidth: .infinity, minHeight: 34)
-            .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.08)))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.06)))
+            .frame(maxWidth: .infinity, minHeight: 58)
+            .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(hover ? 0.1 : 0.06)))
+            .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous).stroke(.white.opacity(0.06)))
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .onHover { hover = $0 }
+    }
+}
+
+private struct RecentRow: View {
+    @EnvironmentObject var store: CastStore
+    let item: RecentCast
+    let tint: Color
+    @State private var hover = false
+
+    var body: some View {
+        Button {
+            if let url = URL(string: item.url) { Task { await store.cast(url, title: item.title) } }
+        } label: {
+            HStack(spacing: 10) {
+                ZStack {
+                    RoundedRectangle(cornerRadius: 6, style: .continuous).fill(.white.opacity(0.08))
+                    Image(systemName: item.kind == "youtube" ? "play.rectangle.fill" : item.kind == "file" ? "doc.fill" : "link")
+                        .font(.system(size: 11)).foregroundStyle(item.kind == "youtube" ? .red : .secondary)
+                    if let s = item.image, let u = URL(string: s) {
+                        AsyncImage(url: u) { p in p.image?.resizable().aspectRatio(contentMode: .fill) }
+                    }
+                }
+                .frame(width: 52, height: 30)
+                .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(item.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+                    Text(item.date.formatted(.relative(presentation: .named)))
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 4)
+                Image(systemName: "play.fill")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(tint)
+                    .opacity(hover ? 1 : 0)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 5)
+            .background(RoundedRectangle(cornerRadius: 9, style: .continuous).fill(.white.opacity(hover ? 0.07 : 0)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hover = $0 }
+    }
+}
+
+private struct Searching: View {
+    @EnvironmentObject var store: CastStore
+    var body: some View {
+        VStack(spacing: 10) {
+            ProgressView().controlSize(.small)
+            Text(store.devices.isEmpty ? String(localized: "Procurando Chromecast na rede…") : String(localized: "Conectando…"))
+                .font(.system(size: 12, weight: .medium))
+            if let e = store.error {
+                Text(e).font(.system(size: 11)).foregroundStyle(.orange)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            } else if store.devices.isEmpty {
+                Text("Se nada aparecer, libere o app em Ajustes do Sistema → Privacidade e Segurança → Rede Local.")
+                    .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: .infinity, minHeight: 160)
     }
 }
 
@@ -362,37 +675,23 @@ private struct DashboardActive: View {
                     ProgressView().controlSize(.small)
                 }
             }
-            .frame(width: 280, height: 158)
+            .frame(width: inner, height: inner * 9 / 16)
             .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.1)))
-            .shadow(color: tint.opacity(0.3), radius: 16, y: 8)
-            Text("Painel da casa na TV").font(.system(size: 14, weight: .semibold))
-            Text("Relógio e clima · atualiza a cada minuto")
-                .font(.system(size: 11)).foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-            ActionButton(symbol: "xmark", title: String(localized: "Desligar painel"), tint: tint,
-                         action: store.stopDashboard)
-                .padding(.top, 4)
-        }
-    }
-}
-
-private struct Searching: View {
-    @EnvironmentObject var store: CastStore
-    var body: some View {
-        VStack(spacing: 10) {
-            ProgressView().controlSize(.small)
-            Text(store.devices.isEmpty ? String(localized: "Procurando Chromecast na rede…") : String(localized: "Conectando…"))
-                .font(.system(size: 12, weight: .medium))
-            if store.devices.isEmpty {
-                Text("Se nada aparecer, permita o acesso à Rede Local em Ajustes do Sistema → Privacidade e Segurança.")
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Painel da casa na TV").font(.system(size: 13, weight: .semibold))
+                    Text("Atualiza a cada minuto").font(.system(size: 11)).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button(action: store.stopDashboard) {
+                    Text("Desligar").font(.system(size: 11, weight: .semibold))
+                        .padding(.horizontal, 12).frame(height: 26)
+                        .background(Capsule().fill(.white.opacity(0.1)))
+                }
+                .buttonStyle(.plain)
             }
         }
-        .frame(maxWidth: .infinity, minHeight: 180)
     }
 }
 
@@ -424,9 +723,7 @@ private struct VolumeRow: View {
                 .frame(height: 8)
                 .frame(maxHeight: .infinity)
                 .contentShape(Rectangle())
-                .gesture(DragGesture(minimumDistance: 0).onChanged { g in
-                    change(to: g.location.x / w)
-                })
+                .gesture(DragGesture(minimumDistance: 0).onChanged { g in change(to: g.location.x / w) })
             }
             .frame(height: 20)
 
@@ -435,7 +732,6 @@ private struct VolumeRow: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 26, alignment: .trailing)
 
-            // atalhos de teclado ↑/↓
             Group {
                 Button("") { change(to: store.volume + store.volumeStep) }.keyboardShortcut(.upArrow, modifiers: [])
                 Button("") { change(to: store.volume - store.volumeStep) }.keyboardShortcut(.downArrow, modifiers: [])
@@ -443,11 +739,11 @@ private struct VolumeRow: View {
             .frame(width: 0, height: 0).opacity(0)
         }
         .padding(.horizontal, 12)
-        .frame(height: 44)
-        .background(RoundedRectangle(cornerRadius: 13).fill(.white.opacity(0.05)))
+        .frame(height: 40)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.05)))
+        .help(String(localized: "⌃⌥↑ / ⌃⌥↓ mudam o volume de qualquer lugar"))
     }
 
-    /// Um "clique" no trackpad a cada passo de volume do aparelho.
     private func change(to level: Double) {
         let step = store.volumeStep
         let new = (min(max(level, 0), 1) / step).rounded() * step
@@ -466,43 +762,33 @@ private struct SleepRow: View {
 
     var body: some View {
         Group {
-            if let at = store.sleepAt {
-                active(at).transition(.move(edge: .trailing).combined(with: .opacity))
-            } else {
-                picker.transition(.opacity)
-            }
+            if let at = store.sleepAt { active(at).transition(.move(edge: .trailing).combined(with: .opacity)) }
+            else { picker.transition(.opacity) }
         }
         .padding(.horizontal, 12)
-        .frame(height: 44)
-        .background(RoundedRectangle(cornerRadius: 13).fill(.white.opacity(0.05)))
+        .frame(height: 40)
+        .background(RoundedRectangle(cornerRadius: 12, style: .continuous).fill(.white.opacity(0.05)))
         .animation(.snappy, value: store.sleepAt == nil)
     }
 
     private var picker: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "moon.zzz")
-                .font(.system(size: 13, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 20)
-            Text("Dormir em")
-                .font(.system(size: 10.5, weight: .medium))
-                .foregroundStyle(.secondary)
-                .fixedSize()
+        HStack(spacing: 5) {
+            Image(systemName: "moon.zzz").font(.system(size: 12, weight: .semibold)).foregroundStyle(.secondary).frame(width: 22)
+            Text("Dormir em").font(.system(size: 11, weight: .medium)).foregroundStyle(.secondary).fixedSize()
             Spacer(minLength: 2)
             ForEach([(15, "15m"), (30, "30m"), (60, "1h")], id: \.0) { m, label in
                 chip(label) { store.startSleep(minutes: m) }
             }
             if store.media?.duration != nil {
-                chip(String(localized: "Fim"), width: 36) { store.sleepAtEndOfEpisode() }
+                chip(String(localized: "Fim"), width: 38) { store.sleepAtEndOfEpisode() }
                     .help(String(localized: "Parar quando o episódio acabar"))
             }
         }
     }
 
-    private func chip(_ label: String, width: CGFloat = 32, action: @escaping () -> Void) -> some View {
+    private func chip(_ label: String, width: CGFloat = 34, action: @escaping () -> Void) -> some View {
         Button(action: action) {
-            Text(label)
-                .font(.system(size: 10.5, weight: .semibold))
+            Text(label).font(.system(size: 10.5, weight: .semibold))
                 .frame(width: width, height: 24)
                 .background(Capsule().fill(.white.opacity(0.08)))
                 .contentShape(Capsule())
@@ -515,40 +801,26 @@ private struct SleepRow: View {
             HStack(spacing: 10) {
                 ZStack {
                     Circle().stroke(.white.opacity(0.1), lineWidth: 2.5)
-                    Circle()
-                        .trim(from: 0, to: 1 - store.sleepProgress(at: ctx.date))
+                    Circle().trim(from: 0, to: 1 - store.sleepProgress(at: ctx.date))
                         .stroke(tint, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
                         .rotationEffect(.degrees(-90))
-                    Image(systemName: "moon.fill")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(tint)
+                    Image(systemName: "moon.fill").font(.system(size: 9, weight: .bold)).foregroundStyle(tint)
                         .symbolEffect(.pulse, options: .repeating, isActive: store.fading)
                 }
-                .frame(width: 24, height: 24)
-
-                VStack(alignment: .leading, spacing: 1) {
+                .frame(width: 22, height: 22)
+                VStack(alignment: .leading, spacing: 0) {
                     Text(remaining(at.timeIntervalSince(ctx.date)))
-                        .font(.system(size: 14, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
+                        .font(.system(size: 13, weight: .semibold, design: .rounded)).monospacedDigit()
                     Text(store.fading ? String(localized: "Abaixando o volume…")
                          : store.sleepMode == .endOfEpisode ? String(localized: "No fim do episódio")
                          : String(localized: "Para às \(at.formatted(date: .omitted, time: .shortened))"))
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 10, weight: .medium)).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button { store.extendSleep(minutes: 15) } label: {
-                    Text("+15m")
-                        .font(.system(size: 10.5, weight: .semibold))
-                        .padding(.horizontal, 8).frame(height: 24)
-                        .background(Capsule().fill(.white.opacity(0.08)))
-                }
-                .buttonStyle(.plain)
+                chip("+15m", width: 44) { store.extendSleep(minutes: 15) }
                 Button(action: store.cancelSleep) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10, weight: .bold))
-                        .frame(width: 24, height: 24)
-                        .background(Circle().fill(.white.opacity(0.08)))
+                    Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                        .frame(width: 24, height: 24).background(Circle().fill(.white.opacity(0.08)))
                 }
                 .buttonStyle(.plain)
                 .help(String(localized: "Cancelar timer"))
@@ -567,20 +839,11 @@ private struct SleepRow: View {
 
 private struct Footer: View {
     @EnvironmentObject var store: CastStore
-    @State private var renaming = false
-    @State private var newName = ""
-    @State private var confirmReboot = false
-    @State private var askingLink = false
-    @State private var link = ""
-
     var body: some View {
         HStack(spacing: 6) {
-            if let err = store.error {
-                Image(systemName: "exclamationmark.triangle.fill").foregroundStyle(.orange)
-                Text(err).lineLimit(1).truncationMode(.tail)
-            } else if let info = store.info {
+            if let info = store.info {
                 if let s = info.signal {
-                    Image(systemName: "wifi", variableValue: signalStrength(s))
+                    Image(systemName: "wifi", variableValue: min(max(Double(s + 85) / 45, 0.05), 1))
                         .help(info.ssid.map { "\($0) · \(s) dBm" } ?? "\(s) dBm")
                 }
                 Text(info.firmware.isEmpty ? "Chromecast" : "Cast \(info.firmware)").lineLimit(1)
@@ -588,64 +851,16 @@ private struct Footer: View {
                 Text(d.model)
             }
             Spacer()
-            Button(action: { store.requestStatus(); store.requestDeviceInfo() }) {
-                Image(systemName: "arrow.clockwise").frame(width: 22, height: 22).contentShape(Rectangle())
+            Text("⌃⌥T aba · ⌃⌥↑↓ volume").lineLimit(1)
+            Button(action: { store.requestStatus(); store.requestDeviceInfo(); Task { await store.refreshBrowserTab() } }) {
+                Image(systemName: "arrow.clockwise").frame(width: 20, height: 20).contentShape(Rectangle())
             }
+            .buttonStyle(.plain)
             .keyboardShortcut("r")
-            Menu {
-                Button("Transmitir arquivo…") { pickFile() }
-                Button("Transmitir link…") { link = ""; askingLink = true }
-                Divider()
-                if store.isCasting { Button("Parar transmissão") { store.stopCasting() } }
-                Button("Renomear…") { newName = store.displayName; renaming = true }
-                Button("Reiniciar Chromecast…") { confirmReboot = true }
-                Button("Reconectar") { store.connect() }
-                Divider()
-                Button("Fechar app") { NSApp.terminate(nil) }.keyboardShortcut("q")
-            } label: { Image(systemName: "ellipsis").frame(width: 22, height: 22) }
-                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
-                .disabled(!store.connected)
         }
-        .buttonStyle(.plain)
-        .font(.system(size: 11))
+        .font(.system(size: 10.5))
         .foregroundStyle(.tertiary)
-        .alert("Renomear Chromecast", isPresented: $renaming) {
-            TextField("Nome", text: $newName)
-            Button("Cancelar", role: .cancel) {}
-            Button("Salvar") { store.rename(to: newName) }
-        } message: {
-            Text("O novo nome aparece no celular, no Chrome e aqui.")
-        }
-        .alert("Transmitir link", isPresented: $askingLink) {
-            TextField("https://youtu.be/…", text: $link)
-            Button("Cancelar", role: .cancel) {}
-            Button("Transmitir") {
-                if let url = URL(string: link.trimmingCharacters(in: .whitespaces)) { Task { await store.cast(url) } }
-            }
-        } message: {
-            Text("YouTube ou link direto para vídeo, música, imagem ou HLS (.m3u8).")
-        }
-        .confirmationDialog("Reiniciar o Chromecast?", isPresented: $confirmReboot) {
-            Button("Reiniciar", role: .destructive) { store.reboot() }
-            Button("Cancelar", role: .cancel) {}
-        } message: {
-            Text("A transmissão atual é interrompida e o aparelho volta em cerca de 1 minuto.")
-        }
-    }
-
-    private func pickFile() {
-        let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.movie, .audio, .image]
-        panel.allowsMultipleSelection = false
-        NSApp.activate(ignoringOtherApps: true)
-        if panel.runModal() == .OK, let url = panel.url {
-            Task { await store.cast(url) }
-        }
-    }
-
-    /// -40 dBm ou melhor = cheio; -85 dBm ou pior = vazio
-    private func signalStrength(_ dbm: Int) -> Double {
-        min(max(Double(dbm + 85) / 45, 0.05), 1)
+        .padding(.top, 2)
     }
 }
 

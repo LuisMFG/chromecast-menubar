@@ -28,6 +28,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
     <key>LSHandlerRank</key><string>Alternate</string>
     <key>LSItemContentTypes</key><array><string>public.movie</string><string>public.audio</string><string>public.image</string></array>
   </dict></array>
+  <key>NSAppleEventsUsageDescription</key><string>Reads the active browser tab so you can send it to the TV.</string>
   <key>NSBonjourServices</key><array><string>_googlecast._tcp</string></array>
 </dict></plist>
 PLIST

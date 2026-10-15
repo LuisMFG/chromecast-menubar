@@ -79,6 +79,20 @@ final class CastStore: ObservableObject {
     @Published var info: DeviceInfo?
     /// Texto de progresso ao preparar uma transmissão ("Convertendo 40%", "Abrindo…")
     @Published var castProgress: String?
+    /// Aviso informativo (não é erro): Spotify, DRM, dicas.
+    @Published var notice: String? {
+        didSet {
+            noticeClear?.cancel()
+            guard notice != nil else { return }
+            noticeClear = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(10))
+                if !Task.isCancelled { self?.notice = nil }
+            }
+        }
+    }
+    private var noticeClear: Task<Void, Never>?
+    @Published var browserTab: BrowserTab?
+    @Published private(set) var recents: [RecentCast] = []
     @Published private(set) var dashboardOn = false
     @Published private(set) var dashboardPreview: NSImage?
 
@@ -102,6 +116,7 @@ final class CastStore: ObservableObject {
     private var pendingYouTube: YouTubeLink?
     private var youtubeTransportAsked: String?
     private let lounge = YouTubeLounge()
+    private lazy var tabs = BrowserWatcher()
 
     // Timer de sono
     enum SleepMode: Equatable { case duration, endOfEpisode }
@@ -123,6 +138,7 @@ final class CastStore: ObservableObject {
     init() {
         startBrowsing()
         registerHotKeys()
+        loadRecents()
         NotificationCenter.default.addObserver(forName: .castFiles, object: nil, queue: .main) { [weak self] n in
             guard let urls = n.object as? [URL], let url = urls.first else { return }
             Task { @MainActor in await self?.cast(url) }
@@ -130,7 +146,9 @@ final class CastStore: ObservableObject {
     }
 
     /// Store com dados fictícios, usado só pra gerar snapshots da interface.
-    init(preview app: ReceiverApp?, media: MediaState?, volume: Double, tint: Color? = nil) {
+    init(preview app: ReceiverApp?, media: MediaState?, volume: Double, tint: Color? = nil,
+         tab: BrowserTab? = nil, recents: [RecentCast] = []) {
+        isPreview = true
         devices = [CastDevice(id: "preview", name: "Sala", model: "Chromecast", endpoint: .hostPort(host: "127.0.0.1", port: 8009))]
         selectedId = "preview"
         connected = true
@@ -138,7 +156,9 @@ final class CastStore: ObservableObject {
         self.media = media
         self.volume = volume
         self.artworkTint = tint
-        isPreview = true
+        self.browserTab = tab
+        self.recents = recents
+        info = DeviceInfo(name: "Sala", firmware: "1.56.467165", signal: -44, ssid: nil, timezone: nil)
     }
 
     // MARK: - Descoberta (Bonjour _googlecast._tcp)
@@ -174,6 +194,7 @@ final class CastStore: ObservableObject {
     // MARK: - Conexão
 
     func connect() {
+        guard !isPreview else { return }
         reconnectTask?.cancel()
         pollTask?.cancel()
         channel?.stop()
@@ -198,16 +219,16 @@ final class CastStore: ObservableObject {
             requestStatus()
             requestDeviceInfo()
             startPolling()
-        case .failed(let e):
+        case .failed:
             connected = false
-            error = e.localizedDescription
+            error = String(localized: "Não consegui falar com o Chromecast. Ele está ligado e na mesma rede?")
             scheduleReconnect()
         case .cancelled:
             connected = false
             scheduleReconnect()
-        case .waiting(let e):
+        case .waiting:
             connected = false
-            error = e.localizedDescription
+            error = String(localized: "Sem acesso à rede local. Libere o app em Ajustes → Privacidade e Segurança → Rede Local.")
             scheduleReconnect()
         default: break
         }
@@ -408,6 +429,9 @@ final class CastStore: ObservableObject {
         let mods = controlKey | optionKey
         HotKeys.shared.register(keyCode: kVK_UpArrow, modifiers: mods) { [weak self] in self?.nudgeVolume(+1) }
         HotKeys.shared.register(keyCode: kVK_DownArrow, modifiers: mods) { [weak self] in self?.nudgeVolume(-1) }
+        HotKeys.shared.register(keyCode: kVK_ANSI_T, modifiers: mods) { [weak self] in
+            Task { await self?.castBrowserTab(showHUD: true) }
+        }
         HotKeys.shared.register(keyCode: kVK_Space, modifiers: mods) { [weak self] in
             guard let self, let m = self.media else { return }
             self.togglePlay()
@@ -427,14 +451,87 @@ final class CastStore: ObservableObject {
 
     // MARK: - Transmitir do Mac
 
-    /// Arquivo local ou link http(s). Vídeos fora do padrão da 1ª geração são convertidos antes.
-    func cast(_ url: URL) async {
+    /// Qualquer coisa: arquivo do Mac, YouTube, link direto, página com vídeo, Spotify…
+    func cast(_ url: URL, title: String? = nil) async {
         guard connected else { error = String(localized: "Chromecast desconectado"); return }
-        if let yt = YouTubeLink(url) { return castYouTube(yt) }
-        if !url.isFileURL {
-            guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
-            return load(contentURL: url.absoluteString, mime: MediaServer.mime(for: url), title: url.lastPathComponent)
+        notice = nil
+        if !url.isFileURL, YouTubeLink(url) == nil { castProgress = String(localized: "Procurando o vídeo…") }
+        switch await Resolver.resolve(url) {
+        case .youtube(let link):
+            castYouTube(link)
+            remember(url: url, title: title ?? String(localized: "Vídeo do YouTube"), kind: "youtube",
+                     image: "https://i.ytimg.com/vi/\(link.videoId)/hqdefault.jpg")
+        case .media(let media, let mime, let found, let image):
+            if media.isFileURL { await castFile(media) }
+            else { load(contentURL: media.absoluteString, mime: mime, title: title ?? found, image: image) }
+            remember(url: url.absoluteString == media.absoluteString ? url : url, title: title ?? found,
+                     kind: media.isFileURL ? "file" : "media", image: image?.absoluteString)
+        case .spotify(let link):
+            castProgress = nil
+            openInSpotify(link)
+        case .unsupported(let message):
+            castProgress = nil
+            notice = message
         }
+    }
+
+    /// Aba ativa do navegador → TV. Pausa o vídeo no navegador quando dá.
+    func castBrowserTab(showHUD: Bool = false) async {
+        guard let tab = await tabs.activeTab() else {
+            notice = String(localized: "Nenhuma aba de navegador encontrada (Brave, Chrome, Safari, Arc ou Edge).")
+            return
+        }
+        browserTab = tab
+        if showHUD { HUD.shared.show(symbol: "tv.and.mediabox", title: String(localized: "Enviando para a TV")) }
+        await cast(tab.url, title: tab.title.isEmpty ? nil : cleanTitle(tab.title))
+        if error == nil, notice == nil { BrowserWatcher.pauseVideo(in: tab) }
+    }
+
+    func refreshBrowserTab() async {
+        guard !isPreview else { return }
+        browserTab = await tabs.activeTab()
+    }
+
+    /// "Vídeo X - YouTube" → "Vídeo X"
+    private func cleanTitle(_ t: String) -> String {
+        t.replacingOccurrences(of: #"^\(\d+\)\s*"#, with: "", options: .regularExpression)
+            .replacingOccurrences(of: #"\s[-–|]\s(YouTube|YouTube Music|Vimeo|Twitch)$"#, with: "", options: .regularExpression)
+    }
+
+    private func openInSpotify(_ url: URL) {
+        // open.spotify.com/track/ID → spotify:track:ID
+        var target = url
+        let parts = url.pathComponents.filter { $0 != "/" && !$0.hasPrefix("intl-") }
+        if url.host?.hasSuffix("spotify.com") == true, parts.count >= 2,
+           let uri = URL(string: "spotify:\(parts[0]):\(parts[1])") { target = uri }
+        NSWorkspace.shared.open(target)
+        notice = String(localized: "Abri no Spotify. Lá, toque em “Conectar a um dispositivo” e escolha \(displayName) — o Spotify só transmite pelo próprio app.")
+    }
+
+    // MARK: Recentes
+
+    private func remember(url: URL, title: String, kind: String, image: String?) {
+        guard !isPreview else { return }
+        let item = RecentCast(url: url.absoluteString, title: title, kind: kind, image: image, date: Date())
+        recents.removeAll { $0.url == item.url }
+        recents.insert(item, at: 0)
+        recents = Array(recents.prefix(8))
+        if let data = try? JSONEncoder().encode(recents) { UserDefaults.standard.set(data, forKey: "recents") }
+    }
+
+    private func loadRecents() {
+        guard let data = UserDefaults.standard.data(forKey: "recents"),
+              let list = try? JSONDecoder().decode([RecentCast].self, from: data) else { return }
+        recents = list
+    }
+
+    func clearRecents() {
+        recents = []
+        UserDefaults.standard.removeObject(forKey: "recents")
+    }
+
+    /// Arquivo do Mac: converte se a 1ª geração não suportar e serve pela rede local.
+    private func castFile(_ url: URL) async {
         var file = url
         let plan = await Transcoder.plan(for: url)
         if plan != .direct {
@@ -502,8 +599,10 @@ final class CastStore: ObservableObject {
     }
 
     /// Abre o player padrão do Chromecast (se preciso) e manda carregar a mídia.
-    private func load(contentURL: String, mime: String, title: String, quiet: Bool = false) {
+    private func load(contentURL: String, mime: String, title: String, image: URL? = nil, quiet: Bool = false) {
         let kind = mime.hasPrefix("image/") ? 4 : mime.hasPrefix("audio/") ? 3 : 0
+        var metadata: [String: Any] = ["metadataType": kind, "title": title]
+        if let image { metadata["images"] = [["url": image.absoluteString]] }
         let request: [String: Any] = [
             "type": "LOAD",
             "autoplay": true,
@@ -512,7 +611,7 @@ final class CastStore: ObservableObject {
                 "contentId": contentURL,
                 "contentType": mime,
                 "streamType": "BUFFERED",
-                "metadata": ["metadataType": kind, "title": title],
+                "metadata": metadata,
             ],
         ]
         if !quiet { castProgress = String(localized: "Abrindo na TV…") }
