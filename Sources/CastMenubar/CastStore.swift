@@ -126,6 +126,10 @@ final class CastStore: ObservableObject {
     static let youtubeApp = "233637DE"
     static let spotifyApp = "CC32E753"
     private var pendingYouTube: YouTubeLink?
+    private var pendingYouTubeAction: YouTubeLounge.Action = .playNow
+    /// screenId do YouTube aberto na TV (vale enquanto o app do YouTube estiver lá).
+    private var youtubeScreenId: String?
+    var youtubeOnTV: Bool { app?.appId == Self.youtubeApp }
     private var youtubeTransportAsked: String?
     private let lounge = YouTubeLounge()
     private lazy var tabs = BrowserWatcher()
@@ -425,6 +429,14 @@ final class CastStore: ObservableObject {
             send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
             send(to: newApp.transportId, ns: CastNS.media, ["type": "GET_STATUS"])
         }
+        if newApp.appId != Self.youtubeApp { youtubeScreenId = nil }
+        // YouTube aberto (por nós ou pelo celular): pega o screenId pra permitir fila
+        if newApp.appId == Self.youtubeApp, youtubeScreenId == nil, pendingYouTube == nil,
+           youtubeTransportAsked != newApp.transportId, !newApp.transportId.isEmpty {
+            youtubeTransportAsked = newApp.transportId
+            send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
+            channel?.send(to: newApp.transportId, ns: CastNS.youtube, ["type": "getMdxSessionStatus"])
+        }
         if pendingYouTube != nil, newApp.appId == Self.youtubeApp, !newApp.transportId.isEmpty,
            youtubeTransportAsked != newApp.transportId {
             youtubeTransportAsked = newApp.transportId
@@ -565,14 +577,14 @@ final class CastStore: ObservableObject {
     // MARK: - Transmitir do Mac
 
     /// Qualquer coisa: arquivo do Mac, YouTube, link direto, página com vídeo, Spotify…
-    func cast(_ url: URL, title: String? = nil) async {
+    func cast(_ url: URL, title: String? = nil, youtube action: YouTubeLounge.Action = .playNow) async {
         guard connected else { error = String(localized: "Chromecast desconectado"); return }
         notice = nil
         if !url.isFileURL, YouTubeLink(url) == nil { castProgress = String(localized: "Procurando o vídeo…") }
         let cookies = useBrowserLogin ? tabs.ytdlpBrowserName : nil
         switch await Resolver.resolve(url, cookiesFrom: cookies) {
         case .youtube(let link):
-            castYouTube(link)
+            castYouTube(link, action: action)
             remember(url: url, title: title ?? String(localized: "Vídeo do YouTube"), kind: "youtube",
                      image: "https://i.ytimg.com/vi/\(link.videoId)/hqdefault.jpg")
         case .media(let media, let mime, let found, let image):
@@ -591,14 +603,14 @@ final class CastStore: ObservableObject {
     }
 
     /// Aba ativa do navegador → TV. Pausa o vídeo no navegador quando dá.
-    func castBrowserTab(showHUD: Bool = false) async {
+    func castBrowserTab(showHUD: Bool = false, youtube action: YouTubeLounge.Action = .playNow) async {
         guard let tab = await tabs.activeTab() else {
             notice = String(localized: "Nenhuma aba de navegador encontrada (Brave, Chrome, Safari, Arc ou Edge).")
             return
         }
         browserTab = tab
         if showHUD { HUD.shared.show(symbol: "tv.and.mediabox", title: String(localized: "Enviando para a TV")) }
-        await cast(tab.url, title: tab.title.isEmpty ? nil : cleanTitle(tab.title))
+        await cast(tab.url, title: tab.title.isEmpty ? nil : cleanTitle(tab.title), youtube: action)
         if error == nil, notice == nil { BrowserWatcher.pauseVideo(in: tab) }
     }
 
@@ -683,8 +695,15 @@ final class CastStore: ObservableObject {
     }
 
     /// Abre o app do YouTube no Chromecast e manda o vídeo pela Lounge API.
-    func castYouTube(_ link: YouTubeLink) {
+    func castYouTube(_ link: YouTubeLink, action: YouTubeLounge.Action = .playNow) {
         if dashboardOn { endDashboard() }
+        // fila só faz sentido com o YouTube já aberto na TV; senão vira "tocar agora"
+        let action = youtubeOnTV ? action : .playNow
+        if action != .playNow, let screenId = youtubeScreenId {
+            castProgress = action == .playNext ? String(localized: "Colocando a seguir…") : String(localized: "Adicionando à fila…")
+            return sendLounge(action, link, screenId)
+        }
+        pendingYouTubeAction = action
         pendingYouTube = link
         youtubeTransportAsked = nil
         castProgress = String(localized: "Abrindo o YouTube…")
@@ -706,19 +725,36 @@ final class CastStore: ObservableObject {
     }
 
     private func youtubeMessage(_ type: String, _ obj: [String: Any]) {
-        guard type == "mdxSessionStatus", let link = pendingYouTube,
+        guard type == "mdxSessionStatus",
               let screenId = (obj["data"] as? [String: Any])?["screenId"] as? String else { return }
+        youtubeScreenId = screenId
+        guard let link = pendingYouTube else { return }
         pendingYouTube = nil
         castProgress = String(localized: "Enviando o vídeo…")
+        sendLounge(pendingYouTubeAction, link, screenId)
+    }
+
+    private func sendLounge(_ action: YouTubeLounge.Action, _ link: YouTubeLink, _ screenId: String) {
         Task {
             do {
-                try await lounge.play(screenId: screenId, link: link, senderName: Host.current().localizedName ?? "Mac")
+                try await lounge.send(action, link: link, screenId: screenId, senderName: Host.current().localizedName ?? "Mac")
                 castProgress = nil
+                switch action {
+                case .playNext: notice = String(localized: "Vai tocar a seguir na TV.")
+                case .addToQueue: notice = String(localized: "Adicionado à fila da TV.")
+                case .playNow: break
+                }
             } catch {
                 castProgress = nil
                 self.error = error.localizedDescription
             }
         }
+    }
+
+    /// Pula pro próximo da fila do YouTube.
+    func youtubeNext() {
+        guard let screenId = youtubeScreenId else { return }
+        Task { try? await lounge.next(screenId: screenId) }
     }
 
     /// Abre o player padrão do Chromecast (se preciso) e manda carregar a mídia.

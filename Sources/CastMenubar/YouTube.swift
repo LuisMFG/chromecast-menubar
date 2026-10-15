@@ -34,51 +34,113 @@ struct YouTubeLink: Equatable {
     }
 }
 
-/// Lounge API do YouTube: é assim que o app do celular manda vídeos pro YouTube do Chromecast.
-/// screenId (pego no canal mdx do Cast) → loungeToken → bind (SID + gsessionid) → setPlaylist.
+/// Lounge API do YouTube: é assim que o app do celular controla o YouTube do Chromecast.
+/// screenId (pego no canal mdx do Cast) → loungeToken → bind (SID + gsessionid) → comandos.
+/// A sessão fica aberta entre comandos (fila!) e é refeita sozinha quando expira.
 /// Formato atual conferido com o pyytlounge; o do casttube (`req0__videoId`) é aceito mas ignorado.
 actor YouTubeLounge {
     private let base = "https://www.youtube.com/api/lounge"
+    private var screenId: String?
+    private var token: String?
+    private var sid: String?
+    private var gsession: String?
+    private var offset = 1
+    private var senderName = "Mac"
 
     enum Failure: LocalizedError {
         case step(String)
-        var errorDescription: String? { if case .step(let s) = self { return s }; return nil }
+        case sessionLost
+        var errorDescription: String? {
+            switch self {
+            case .step(let s): return s
+            case .sessionLost: return String(localized: "A sessão do YouTube expirou")
+            }
+        }
     }
 
-    func play(screenId: String, link: YouTubeLink, senderName: String) async throws {
-        // 1. token
-        let tokenBody = try await post("\(base)/pairing/get_lounge_token_batch", form: ["screen_ids": screenId])
+    enum Action { case playNow, playNext, addToQueue }
+
+    func send(_ action: Action, link: YouTubeLink, screenId: String, senderName: String) async throws {
+        self.senderName = senderName
+        var params = ["videoId": link.videoId]
+        let command: String
+        switch action {
+        case .playNow:
+            command = "setPlaylist"
+            params["currentTime"] = "\(link.start)"
+            params["currentIndex"] = "-1"
+            if !link.listId.isEmpty { params["listId"] = link.listId }
+        case .playNext: command = "insertVideo"
+        case .addToQueue: command = "addVideo"
+        }
+        try await run(command, params, screenId: screenId)
+    }
+
+    func next(screenId: String) async throws { try await run("next", [:], screenId: screenId) }
+
+    // MARK: - sessão
+
+    private func run(_ command: String, _ params: [String: String], screenId: String) async throws {
+        if screenId != self.screenId || sid == nil { try await connect(screenId) }
+        do {
+            try await self.command(command, params)
+        } catch Failure.sessionLost {
+            try await connect(screenId)          // SID venceu: refaz e repete uma vez
+            try await self.command(command, params)
+        }
+    }
+
+    private func connect(_ screenId: String) async throws {
+        let (tokenBody, _) = try await post("\(base)/pairing/get_lounge_token_batch", form: ["screen_ids": screenId])
         guard let json = try? JSONSerialization.jsonObject(with: tokenBody) as? [String: Any],
               let token = (json["screens"] as? [[String: Any]])?.first?["loungeToken"] as? String else {
             throw Failure.step(String(localized: "YouTube recusou o pareamento"))
         }
-        // 2. bind (formato atual da Lounge API, como no pyytlounge)
-        let bindForm: [String: String] = [
+        let form: [String: String] = [
             "app": "web", "mdx-version": "3", "name": senderName, "id": screenId,
             "device": "REMOTE_CONTROL", "capabilities": "que,dsdtr,atp,vsp", "magnaKey": "cloudPairedDevice",
             "ui": "false", "theme": "cl", "loungeIdToken": token,
             "deviceContext": "user_agent=dunno&window_width_points=&window_height_points=&os_name=android&ms=",
         ]
-        let bind = String(decoding: try await post("\(base)/bc/bind",
-                                                   query: ["RID": "1", "VER": "8", "CVER": "1", "auth_failure_option": "send_error"],
-                                                   form: bindForm), as: UTF8.self)
+        let (data, _) = try await post("\(base)/bc/bind",
+                                       query: ["RID": "1", "VER": "8", "CVER": "1", "auth_failure_option": "send_error"],
+                                       form: form)
+        let bind = String(decoding: data, as: UTF8.self)
         guard let sid = bind.firstMatch(#""c","(.*?)",""#), let gsession = bind.firstMatch(#""S","(.*?)"]"#) else {
             throw Failure.step(String(localized: "Não consegui abrir a sessão do YouTube"))
         }
-        // 3. tocar: req0__sc = comando; parâmetros como req0_<nome>
-        var form = ["count": "1", "ofs": "1", "req0__sc": "setPlaylist", "req0_videoId": link.videoId,
-                    "req0_currentTime": "\(link.start)", "req0_currentIndex": "-1"]
-        if !link.listId.isEmpty { form["req0_listId"] = link.listId }
-        _ = try await post("\(base)/bc/bind",
-                           query: ["name": senderName, "loungeIdToken": token, "SID": sid, "AID": "0", "gsessionid": gsession,
-                                   "device": "REMOTE_CONTROL", "app": "youtube-desktop", "VER": "8", "v": "2", "RID": "2"],
-                           form: form)
+        self.screenId = screenId
+        self.token = token
+        self.sid = sid
+        self.gsession = gsession
+        offset = 1
     }
 
-    private func post(_ url: String, query: [String: String] = [:], form: [String: String]) async throws -> Data {
+    /// req0__sc = comando; parâmetros como req0_<nome>; ofs e RID avançam a cada comando.
+    private func command(_ name: String, _ params: [String: String]) async throws {
+        guard let token, let sid, let gsession else { throw Failure.sessionLost }
+        var form = ["count": "1", "ofs": "\(offset)", "req0__sc": name]
+        for (k, v) in params { form["req0_\(k)"] = v }
+        offset += 1
+        let (body, status) = try await post("\(base)/bc/bind",
+                                            query: ["name": senderName, "loungeIdToken": token, "SID": sid, "AID": "0",
+                                                    "gsessionid": gsession, "device": "REMOTE_CONTROL", "app": "youtube-desktop",
+                                                    "VER": "8", "v": "2", "RID": "\(offset)"],
+                                            form: form, allowFailure: true)
+        if [400, 401, 404, 410].contains(status) {
+            self.sid = nil
+            throw Failure.sessionLost
+        }
+        if status != 200 {
+            throw Failure.step(String(localized: "YouTube respondeu HTTP \(status): \(String(decoding: body.prefix(80), as: UTF8.self))"))
+        }
+    }
+
+    private func post(_ url: String, query: [String: String] = [:], form: [String: String],
+                      allowFailure: Bool = false) async throws -> (Data, Int) {
         var comps = URLComponents(string: url)!
         if !query.isEmpty { comps.queryItems = query.map { URLQueryItem(name: $0.key, value: $0.value) } }
-        var req = URLRequest(url: comps.url!)
+        var req = URLRequest(url: comps.url!, timeoutInterval: 15)
         req.httpMethod = "POST"
         req.setValue("https://www.youtube.com/", forHTTPHeaderField: "Origin")
         req.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
@@ -86,10 +148,11 @@ actor YouTubeLounge {
         req.httpBody = form.map { "\($0.key.addingPercentEncoding(withAllowedCharacters: allowed)!)=\($0.value.addingPercentEncoding(withAllowedCharacters: allowed)!)" }
             .joined(separator: "&").data(using: .utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
-        if let http = resp as? HTTPURLResponse, http.statusCode != 200 {
-            throw Failure.step(String(localized: "YouTube respondeu HTTP \(http.statusCode)"))
+        let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        if !allowFailure, status != 200 {
+            throw Failure.step(String(localized: "YouTube respondeu HTTP \(status)"))
         }
-        return data
+        return (data, status)
     }
 }
 

@@ -391,18 +391,50 @@ private struct BrowserTabRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
-            Button { Task { await store.castBrowserTab() } } label: {
-                Text("Transmitir")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.black)
-                    .padding(.horizontal, 11).frame(height: 26)
-                    .background(Capsule().fill(tint))
+            CastButton(tint: tint, queueable: YouTubeLink(tab.url) != nil && store.youtubeOnTV) { action in
+                Task { await store.castBrowserTab(youtube: action) }
             }
-            .buttonStyle(.plain)
             .help(String(localized: "Manda esta aba para a TV (⌃⌥T de qualquer lugar)"))
         }
         .padding(.horizontal, 10).padding(.vertical, 8)
         .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(0.05)))
+    }
+}
+
+/// "Transmitir"; com o YouTube já tocando na TV vira menu: agora / a seguir / fila.
+private struct CastButton: View {
+    let tint: Color
+    let queueable: Bool
+    let action: (YouTubeLounge.Action) -> Void
+
+    var body: some View {
+        if queueable {
+            Menu {
+                Button { action(.playNow) } label: { Label("Tocar agora", systemImage: "play.fill") }
+                Button { action(.playNext) } label: { Label("Tocar a seguir", systemImage: "text.line.first.and.arrowtriangle.forward") }
+                Button { action(.addToQueue) } label: { Label("Adicionar à fila", systemImage: "text.badge.plus") }
+            } label: {
+                label(chevron: true)
+            } primaryAction: {
+                action(.playNow)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+        } else {
+            Button { action(.playNow) } label: { label(chevron: false) }
+                .buttonStyle(.plain)
+        }
+    }
+
+    private func label(chevron: Bool) -> some View {
+        HStack(spacing: 4) {
+            Text("Transmitir").font(.system(size: 11, weight: .bold))
+            if chevron { Image(systemName: "chevron.down").font(.system(size: 8, weight: .heavy)) }
+        }
+        .foregroundStyle(.black)
+        .padding(.horizontal, 11).frame(height: 26)
+        .background(Capsule().fill(tint))
     }
 }
 
@@ -458,6 +490,13 @@ private struct NowPlayingCard: View {
                     RoundIcon(symbol: "goforward.30", size: 38) { store.skip(30) }
                         .disabled(!media.canSeek).opacity(media.canSeek ? 1 : 0.35)
                         .keyboardShortcut(.rightArrow, modifiers: [])
+                }
+                .overlay(alignment: .trailing) {
+                    if store.youtubeOnTV {
+                        RoundIcon(symbol: "forward.end.fill", size: 30) { store.youtubeNext() }
+                            .help(String(localized: "Próximo da fila"))
+                            .offset(x: 46)
+                    }
                 }
                 .padding(.top, 2)
             }
@@ -683,6 +722,15 @@ private struct RecentRow: View {
         }
         .buttonStyle(.plain)
         .onHover { hover = $0 }
+        .contextMenu {
+            if let url = URL(string: item.url) {
+                Button("Tocar agora") { Task { await store.cast(url, title: item.title) } }
+                if YouTubeLink(url) != nil, store.youtubeOnTV {
+                    Button("Tocar a seguir") { Task { await store.cast(url, title: item.title, youtube: .playNext) } }
+                    Button("Adicionar à fila") { Task { await store.cast(url, title: item.title, youtube: .addToQueue) } }
+                }
+            }
+        }
     }
 }
 
