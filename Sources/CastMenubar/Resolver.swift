@@ -82,11 +82,11 @@ enum Resolver {
 
     private static func ytdlp(_ url: URL) async -> CastTarget? {
         guard let path = YTDLP.path else { return nil }
-        // a 1ª geração só toca H.264 até 1080p; prefere arquivo único (sem juntar áudio/vídeo)
-        let args = ["-j", "--no-playlist", "--no-warnings",
-                    "-f", "best[ext=mp4][vcodec^=avc1][height<=1080]/best[ext=mp4][height<=1080]/best[protocol^=m3u8][height<=1080]/best[height<=1080]/best",
-                    url.absoluteString]
-        guard let out = await run(path, args, timeout: 40),
+        let (out, failure) = await run(path, args(for: url), timeout: 40)
+        if let failure {
+            return .unsupported(String(localized: "O yt-dlp não conseguiu ler este site: \(failure.prefix(140)). Às vezes resolve atualizando: brew upgrade yt-dlp"))
+        }
+        guard let out,
               let j = try? JSONSerialization.jsonObject(with: out) as? [String: Any],
               let media = (j["url"] as? String).flatMap(URL.init(string:)) else { return nil }
         let isAudio = (j["vcodec"] as? String) == "none"
@@ -96,20 +96,31 @@ enum Resolver {
                       image: (j["thumbnail"] as? String).flatMap(URL.init(string:)))
     }
 
-    private static func run(_ path: String, _ args: [String], timeout: TimeInterval) async -> Data? {
+    private static func args(for url: URL) -> [String] {
+        // a 1ª geração só toca H.264 até 1080p; prefere arquivo único (sem juntar áudio/vídeo)
+        ["-j", "--no-playlist", "--no-warnings",
+         "-f", "best[ext=mp4][vcodec^=avc1][height<=1080]/best[ext=mp4][height<=1080]/best[protocol^=m3u8][height<=1080]/best[height<=1080]/best",
+         url.absoluteString]
+    }
+
+    /// Roda o yt-dlp; devolve a saída ou a última linha "ERROR:" dele.
+    private static func run(_ path: String, _ args: [String], timeout: TimeInterval) async -> (Data?, String?) {
         await withCheckedContinuation { c in
             let p = Process()
             p.executableURL = URL(fileURLWithPath: path)
             p.arguments = args
-            let pipe = Pipe()
-            p.standardOutput = pipe
-            p.standardError = FileHandle.nullDevice
-            do { try p.run() } catch { c.resume(returning: nil); return }
+            let out = Pipe(), err = Pipe()
+            p.standardOutput = out
+            p.standardError = err
+            do { try p.run() } catch { c.resume(returning: (nil, nil)); return }
             DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { if p.isRunning { p.terminate() } }
             DispatchQueue.global().async {
-                let data = pipe.fileHandleForReading.readDataToEndOfFile()
+                let data = out.fileHandleForReading.readDataToEndOfFile()
+                let errText = String(decoding: err.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
                 p.waitUntilExit()
-                c.resume(returning: p.terminationStatus == 0 ? data : nil)
+                let lastError = errText.split(separator: "\n").last { $0.hasPrefix("ERROR:") }
+                    .map { $0.replacingOccurrences(of: "ERROR: ", with: "").replacingOccurrences(of: #"^\[[^\]]+\]\s*"#, with: "", options: .regularExpression) }
+                c.resume(returning: p.terminationStatus == 0 ? (data, nil) : (nil, lastError ?? "falhou"))
             }
         }
     }
