@@ -16,6 +16,7 @@ struct DeviceInfo: Equatable {
     var firmware: String
     var signal: Int?
     var ssid: String?
+    var timezone: String?
 }
 
 struct ReceiverApp: Equatable {
@@ -66,6 +67,8 @@ final class CastStore: ObservableObject {
     @Published var info: DeviceInfo?
     /// Texto de progresso ao preparar uma transmissão ("Convertendo 40%", "Abrindo…")
     @Published var castProgress: String?
+    @Published private(set) var dashboardOn = false
+    @Published private(set) var dashboardPreview: NSImage?
 
     private var browser: NWBrowser?
     private var channel: CastChannel?
@@ -77,6 +80,11 @@ final class CastStore: ObservableObject {
     private var lastArtwork: URL?
     private var setupRequestId = 1
     private var pendingLoad: [String: Any]?
+    private var dashboardTask: Task<Void, Never>?
+    private var dashboardShown = false
+    private var pendingTurnOn = false
+    private let weather = WeatherService()
+    static let dashboardTitle = "Chromecast — painel"
     static let defaultReceiver = "CC1AD845"
 
     // Timer de sono
@@ -266,6 +274,14 @@ final class CastStore: ObservableObject {
             send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
             send(to: newApp.transportId, ns: CastNS.media, ["type": "GET_STATUS"])
         }
+        if pendingTurnOn, newApp.appId == Self.defaultReceiver {
+            pendingTurnOn = false
+            send(to: "receiver-0", ns: CastNS.receiver, ["type": "STOP", "sessionId": newApp.sessionId])
+        }
+        // painel ativo e alguém transmitiu outra coisa: sai do modo painel
+        if dashboardOn, dashboardShown, newApp.appId != Self.defaultReceiver {
+            endDashboard()
+        }
         if let load = pendingLoad, newApp.appId == Self.defaultReceiver, newApp.hasMedia {
             pendingLoad = nil
             send(to: newApp.transportId, ns: CastNS.media, load)
@@ -300,6 +316,10 @@ final class CastStore: ObservableObject {
             canSeek: commands & 2 != 0,
             canPause: commands & 1 != 0)
         if new.playerState == "IDLE", new.title == nil { media = nil; return }
+        if dashboardOn {
+            if new.title == Self.dashboardTitle { dashboardShown = true }
+            else if dashboardShown, new.title != nil { endDashboard() }
+        }
         withAnimation(.snappy) { media = new }
         loadTint(for: new.artwork)
     }
@@ -357,7 +377,7 @@ final class CastStore: ObservableObject {
     // MARK: - Teclas de mídia e atalhos globais
 
     private func publishNowPlaying() {
-        guard !isPreview else { return }
+        guard !isPreview, !dashboardOn else { return }
         nowPlaying.update()
     }
 
@@ -419,7 +439,7 @@ final class CastStore: ObservableObject {
     }
 
     /// Abre o player padrão do Chromecast (se preciso) e manda carregar a mídia.
-    private func load(contentURL: String, mime: String, title: String) {
+    private func load(contentURL: String, mime: String, title: String, quiet: Bool = false) {
         let kind = mime.hasPrefix("image/") ? 4 : mime.hasPrefix("audio/") ? 3 : 0
         let request: [String: Any] = [
             "type": "LOAD",
@@ -432,7 +452,7 @@ final class CastStore: ObservableObject {
                 "metadata": ["metadataType": kind, "title": title],
             ],
         ]
-        castProgress = String(localized: "Abrindo na TV…")
+        if !quiet { castProgress = String(localized: "Abrindo na TV…") }
         if let a = app, a.appId == Self.defaultReceiver, a.hasMedia {
             send(to: a.transportId, ns: CastNS.media, request)
             castProgress = nil
@@ -444,6 +464,57 @@ final class CastStore: ObservableObject {
                 if self?.pendingLoad != nil { self?.pendingLoad = nil; self?.castProgress = nil }
             }
         }
+    }
+
+    // MARK: - Painel da casa na TV
+
+    /// Mostra relógio, data e clima na TV, atualizando a cada minuto.
+    func startDashboard() {
+        guard connected else { return }
+        dashboardOn = true
+        dashboardShown = false
+        castProgress = String(localized: "Montando o painel…")
+        dashboardTask?.cancel()
+        dashboardTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.pushDashboard()
+                // acorda logo depois da virada do minuto, pro relógio da TV não atrasar
+                let next = 60 - Date().timeIntervalSince1970.truncatingRemainder(dividingBy: 60) + 1
+                try? await Task.sleep(for: .seconds(next))
+            }
+        }
+    }
+
+    func stopDashboard() {
+        let wasShowing = dashboardShown && app?.appId == Self.defaultReceiver
+        endDashboard()
+        if wasShowing { stopCasting() }
+    }
+
+    private func endDashboard() {
+        dashboardTask?.cancel(); dashboardTask = nil
+        dashboardOn = false
+        dashboardShown = false
+    }
+
+    private func pushDashboard() async {
+        let w = await weather.current(timezone: info?.timezone ?? TimeZone.current.identifier)
+        guard dashboardOn,
+              let jpg = DashboardRenderer.png(now: Date(), weather: w, deviceName: displayName),
+              let host = channel?.localAddress, let port = try? MediaServer.shared.start() else { return }
+        MediaServer.shared.publish(data: jpg, path: "/dashboard.jpg", contentType: "image/jpeg")
+        dashboardPreview = NSImage(data: jpg)
+        load(contentURL: "http://\(host):\(port)/dashboard.jpg?t=\(Int(Date().timeIntervalSince1970))",
+             mime: "image/jpeg", title: Self.dashboardTitle, quiet: dashboardShown)
+    }
+
+    /// Liga a TV e troca a entrada: abrir um app no Chromecast dispara o HDMI-CEC "One Touch Play".
+    /// Abre o player padrão e fecha em seguida, voltando para a tela de fundo.
+    func turnOnTV() {
+        guard connected, !isCasting else { return }
+        pendingTurnOn = true
+        send(to: "receiver-0", ns: CastNS.receiver, ["type": "LAUNCH", "appId": Self.defaultReceiver])
+        HUD.shared.show(symbol: "tv", title: String(localized: "Ligando a TV…"))
     }
 
     // MARK: - Timer de sono
@@ -575,7 +646,8 @@ final class CastStore: ObservableObject {
             info = DeviceInfo(name: d["name"] as? String ?? device?.name ?? "",
                               firmware: (d["cast_build_revision"] as? String) ?? "",
                               signal: d["signal_level"] as? Int,
-                              ssid: d["ssid"] as? String)
+                              ssid: d["ssid"] as? String,
+                              timezone: d["timezone"] as? String)
         }
     }
 

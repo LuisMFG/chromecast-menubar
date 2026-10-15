@@ -26,6 +26,8 @@ struct RootView: View {
             }
             if !store.connected {
                 Searching()
+            } else if store.dashboardOn {
+                DashboardActive(tint: tint)
             } else if let media = store.media {
                 NowPlaying(media: media, appName: store.app?.name ?? "", tint: tint)
             } else if let app = store.app, !app.isIdle {
@@ -35,7 +37,7 @@ struct RootView: View {
             }
             if store.connected {
                 VolumeRow(tint: tint)
-                if store.isCasting { SleepRow(tint: tint) }
+                if store.isCasting, !store.dashboardOn { SleepRow(tint: tint) }
             }
             Footer()
         }
@@ -102,6 +104,7 @@ private struct Header: View {
 
     private var status: String {
         guard store.connected else { return String(localized: "Desconectado") }
+        if store.dashboardOn { return String(localized: "Mostrando o painel da casa") }
         guard let app = store.app else { return String(localized: "Pronto para transmitir") }
         if app.isIdle { return String(localized: "Tela de fundo") }
         if let m = store.media {
@@ -303,18 +306,75 @@ private struct AppOnly: View {
 }
 
 private struct Idle: View {
+    @EnvironmentObject var store: CastStore
     let tint: Color
     var body: some View {
         VStack(spacing: 10) {
             IdleTV(tint: tint)
             Text("Nada transmitindo").font(.system(size: 14, weight: .semibold))
-            Text("Transmita do celular ou do Chrome e controle por aqui.")
+            Text("Transmita do celular ou do Chrome, ou solte um arquivo aqui.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                ActionButton(symbol: "rectangle.3.group", title: String(localized: "Painel da casa"), tint: tint,
+                             action: store.startDashboard)
+                ActionButton(symbol: "power", title: String(localized: "Ligar TV"), tint: tint,
+                             action: store.turnOnTV)
+            }
+            .padding(.top, 4)
         }
         .padding(.vertical, 6)
+    }
+}
+
+private struct ActionButton: View {
+    let symbol: String
+    let title: String
+    let tint: Color
+    let action: () -> Void
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 6) {
+                Image(systemName: symbol).font(.system(size: 11, weight: .bold))
+                Text(title).font(.system(size: 11.5, weight: .semibold))
+            }
+            .frame(maxWidth: .infinity, minHeight: 34)
+            .background(RoundedRectangle(cornerRadius: 10).fill(.white.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(.white.opacity(0.06)))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct DashboardActive: View {
+    @EnvironmentObject var store: CastStore
+    let tint: Color
+    var body: some View {
+        VStack(spacing: 10) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.white.opacity(0.05))
+                if let img = store.dashboardPreview {
+                    Image(nsImage: img).resizable().aspectRatio(16 / 9, contentMode: .fill)
+                } else {
+                    ProgressView().controlSize(.small)
+                }
+            }
+            .frame(width: 280, height: 158)
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: 14, style: .continuous).stroke(.white.opacity(0.1)))
+            .shadow(color: tint.opacity(0.3), radius: 16, y: 8)
+            Text("Painel da casa na TV").font(.system(size: 14, weight: .semibold))
+            Text("Relógio e clima · atualiza a cada minuto")
+                .font(.system(size: 11)).foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+            ActionButton(symbol: "xmark", title: String(localized: "Desligar painel"), tint: tint,
+                         action: store.stopDashboard)
+                .padding(.top, 4)
+        }
     }
 }
 
