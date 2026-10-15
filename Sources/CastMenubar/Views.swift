@@ -405,40 +405,54 @@ private struct BrowserTabRow: View {
     }
 }
 
-/// "Transmitir"; com o YouTube já tocando na TV vira menu: agora / a seguir / fila.
+/// "Transmitir"; com o YouTube já tocando na TV ganha uma seta com: agora / a seguir / fila.
 private struct CastButton: View {
     let tint: Color
     let queueable: Bool
     let action: (YouTubeLounge.Action) -> Void
+    @State private var showOptions = false
 
     var body: some View {
-        if queueable {
-            Menu {
-                Button { action(.playNow) } label: { Label("Tocar agora", systemImage: "play.fill") }
-                Button { action(.playNext) } label: { Label("Tocar a seguir", systemImage: "text.line.first.and.arrowtriangle.forward") }
-                Button { action(.addToQueue) } label: { Label("Adicionar à fila", systemImage: "text.badge.plus") }
-            } label: {
-                label(chevron: true)
-            } primaryAction: {
-                action(.playNow)
+        HStack(spacing: 1.5) {
+            Button { action(.playNow) } label: {
+                Text("Transmitir").font(.system(size: 11, weight: .bold))
+                    .padding(.leading, 11).padding(.trailing, queueable ? 8 : 11).frame(height: 26)
+                    .background(UnevenRoundedRectangle(topLeadingRadius: 13, bottomLeadingRadius: 13,
+                                                       bottomTrailingRadius: queueable ? 4 : 13, topTrailingRadius: queueable ? 4 : 13)
+                        .fill(tint))
             }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-        } else {
-            Button { action(.playNow) } label: { label(chevron: false) }
+            .buttonStyle(.plain)
+            if queueable {
+                Button { showOptions.toggle() } label: {
+                    Image(systemName: "chevron.down").font(.system(size: 8, weight: .heavy))
+                        .frame(width: 22, height: 26)
+                        .background(UnevenRoundedRectangle(topLeadingRadius: 4, bottomLeadingRadius: 4,
+                                                           bottomTrailingRadius: 13, topTrailingRadius: 13).fill(tint))
+                }
                 .buttonStyle(.plain)
-        }
-    }
-
-    private func label(chevron: Bool) -> some View {
-        HStack(spacing: 4) {
-            Text("Transmitir").font(.system(size: 11, weight: .bold))
-            if chevron { Image(systemName: "chevron.down").font(.system(size: 8, weight: .heavy)) }
+                .popover(isPresented: $showOptions, arrowEdge: .bottom) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        option("Tocar agora", "play.fill", .playNow)
+                        option("Tocar a seguir", "text.line.first.and.arrowtriangle.forward", .playNext)
+                        option("Adicionar à fila", "text.badge.plus", .addToQueue)
+                    }
+                    .padding(6)
+                }
+            }
         }
         .foregroundStyle(.black)
-        .padding(.horizontal, 11).frame(height: 26)
-        .background(Capsule().fill(tint))
+    }
+
+    private func option(_ title: LocalizedStringKey, _ symbol: String, _ a: YouTubeLounge.Action) -> some View {
+        Button { showOptions = false; action(a) } label: {
+            Label(title, systemImage: symbol)
+                .font(.system(size: 12))
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 8).frame(height: 26)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
     }
 }
 

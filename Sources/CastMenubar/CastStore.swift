@@ -178,7 +178,8 @@ final class CastStore: ObservableObject {
     init(preview app: ReceiverApp?, media: MediaState?, volume: Double, tint: Color? = nil,
          tab: BrowserTab? = nil, recents: [RecentCast] = []) {
         isPreview = true
-        devices = [CastDevice(id: "preview", name: "Sala", model: "Chromecast", endpoint: .hostPort(host: "127.0.0.1", port: 8009))]
+        let room = String(localized: "Sala")
+        devices = [CastDevice(id: "preview", name: room, model: "Chromecast", endpoint: .hostPort(host: "127.0.0.1", port: 8009))]
         selectedId = "preview"
         connected = true
         self.app = app
@@ -187,7 +188,7 @@ final class CastStore: ObservableObject {
         self.artworkTint = tint
         self.browserTab = tab
         self.recents = recents
-        info = DeviceInfo(name: "Sala", firmware: "1.56.467165", signal: -44, ssid: nil, timezone: nil)
+        info = DeviceInfo(name: room, firmware: "1.56.467165", signal: -44, ssid: nil, timezone: nil)
     }
 
     // MARK: - Descoberta (Bonjour _googlecast._tcp)

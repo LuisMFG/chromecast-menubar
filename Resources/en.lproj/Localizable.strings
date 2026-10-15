@@ -1,0 +1,145 @@
+/* Chaves = textos em português usados no código; valores = inglês. */
+
+/* Estado / cabeçalho */
+"Sala" = "Living Room";
+"Reconectando…" = "Reconnecting…";
+"Conectando…" = "Connecting…";
+"Espelhando a tela do Mac" = "Mirroring your Mac";
+"Mostrando o painel" = "Showing the dashboard";
+"Pronto" = "Ready";
+"Pronto para transmitir" = "Ready to cast";
+"Tocando no %@" = "Playing on %@";
+"Pausado no %@" = "Paused on %@";
+"Transmitindo %@" = "Casting %@";
+"Parar" = "Stop";
+"Parar transmissão" = "Stop casting";
+"Procurando Chromecast na rede…" = "Looking for a Chromecast on your network…";
+"Reconectando ao %@…" = "Reconnecting to %@…";
+"Conectando ao %@…" = "Connecting to %@…";
+"Se nada aparecer, libere o app em Ajustes do Sistema → Privacidade e Segurança → Rede Local." = "If nothing shows up, allow the app in System Settings → Privacy & Security → Local Network.";
+"Tentar agora" = "Try now";
+"Não consegui falar com o Chromecast. Ele está ligado e na mesma rede?" = "Couldn't reach the Chromecast. Is it on and on the same network?";
+"Chromecast desconectado" = "Chromecast disconnected";
+
+/* Menu */
+"Transmitir arquivo…" = "Cast a file…";
+"Usar login do navegador (Instagram e X)" = "Use browser sign-in (Instagram and X)";
+"Som do Mac ao espelhar" = "Send Mac audio when mirroring";
+"Renomear…" = "Rename…";
+"Reiniciar Chromecast…" = "Restart Chromecast…";
+"Reconectar" = "Reconnect";
+"Limpar recentes" = "Clear recents";
+"Fechar app" = "Quit";
+"Renomear Chromecast" = "Rename Chromecast";
+"Nome" = "Name";
+"Cancelar" = "Cancel";
+"Salvar" = "Save";
+"O novo nome aparece no celular, no navegador e aqui." = "The new name shows up on your phone, in the browser and here.";
+"Reiniciar o Chromecast?" = "Restart the Chromecast?";
+"Reiniciar" = "Restart";
+"A transmissão atual é interrompida e o aparelho volta em cerca de 1 minuto." = "Whatever is playing stops and the device is back in about a minute.";
+
+/* Enviar */
+"Cole um link pra transmitir" = "Paste a link to cast";
+"Colar" = "Paste";
+"Colar o link copiado e transmitir" = "Paste the copied link and cast it";
+"A área de transferência não tem um link." = "The clipboard doesn't contain a link.";
+"Aba do %@" = "%@ tab";
+"Manda esta aba para a TV (⌃⌥T de qualquer lugar)" = "Send this tab to the TV (⌃⌥T from anywhere)";
+"Transmitir" = "Cast";
+"Tocar agora" = "Play now";
+"Tocar a seguir" = "Play next";
+"Adicionar à fila" = "Add to queue";
+"Próximo da fila" = "Next in queue";
+"Solte para tocar na TV" = "Drop to play on the TV";
+"Vídeo, música, foto ou link" = "Video, music, photo or link";
+"Nenhuma aba de navegador encontrada (Brave, Chrome, Safari, Arc ou Edge)." = "No browser tab found (Brave, Chrome, Safari, Arc or Edge).";
+"Enviando para a TV" = "Sending to the TV";
+
+/* Tocando */
+"Do Mac" = "From Mac";
+"Arquivo" = "File";
+"Este app não expõe controles de mídia." = "This app doesn't expose media controls.";
+"Pausado" = "Paused";
+"Tocando" = "Playing";
+
+/* Início */
+"Painel" = "Dashboard";
+"Relógio e clima na TV" = "Clock and weather on the TV";
+"Ligar TV" = "Turn on TV";
+"Liga a TV e troca a entrada (HDMI-CEC)" = "Turns the TV on and switches input (HDMI-CEC)";
+"Vídeo, música ou foto do Mac" = "Video, music or photo from your Mac";
+"Espelhar" = "Mirror";
+"Mostra a tela do Mac na TV (atraso de alguns segundos)" = "Shows your Mac screen on the TV (a few seconds behind)";
+"Recentes" = "Recent";
+"Dica: arraste um arquivo ou link pra cá, ou use ⌃⌥T no navegador." = "Tip: drop a file or link here, or press ⌃⌥T in your browser.";
+
+/* Espelhar */
+"AO VIVO" = "LIVE";
+"Espelhando a tela" = "Mirroring screen";
+"A TV mostra com alguns segundos de atraso." = "The TV runs a few seconds behind.";
+"Som do Mac vai junto (abaixe o volume do Mac pra não ter eco)" = "Mac audio goes too (lower your Mac's volume to avoid echo)";
+"Só imagem (o som fica no Mac)" = "Video only (audio stays on the Mac)";
+"Parar de espelhar" = "Stop mirroring";
+"Tela do Mac" = "Mac screen";
+"Libere o app em Ajustes do Sistema → Privacidade e Segurança → Gravação de Tela e Áudio do Sistema, e tente de novo." = "Allow the app in System Settings → Privacy & Security → Screen & System Audio Recording, then try again.";
+"Espelhamento parou: %@" = "Mirroring stopped: %@";
+"Preparando o espelhamento…" = "Preparing mirroring…";
+"Não consegui capturar a tela. Confira a permissão de Gravação de Tela em Ajustes do Sistema." = "Couldn't capture the screen. Check the Screen Recording permission in System Settings.";
+
+/* Painel */
+"Painel da casa na TV" = "Dashboard on the TV";
+"Atualiza a cada minuto" = "Updates every minute";
+"Desligar" = "Turn off";
+"Montando o painel…" = "Building the dashboard…";
+"Ligando a TV…" = "Turning the TV on…";
+
+/* Volume / sono */
+"Ativar som" = "Unmute";
+"Silenciar" = "Mute";
+"⌃⌥↑ / ⌃⌥↓ mudam o volume de qualquer lugar" = "⌃⌥↑ / ⌃⌥↓ change the volume from anywhere";
+"Dormir em" = "Sleep in";
+"Fim" = "End";
+"Parar quando o episódio acabar" = "Stop when the episode ends";
+"Abaixando o volume…" = "Lowering the volume…";
+"No fim do episódio" = "At the end of the episode";
+"Para às %@" = "Stops at %@";
+"Cancelar timer" = "Cancel timer";
+"⌃⌥T aba · ⌃⌥↑↓ volume" = "⌃⌥T tab · ⌃⌥↑↓ volume";
+
+/* Transmissão */
+"Procurando o vídeo…" = "Finding the video…";
+"Vídeo do YouTube" = "YouTube video";
+"Abrindo na TV…" = "Opening on the TV…";
+"Preparando vídeo…" = "Preparing video…";
+"Convertendo para H.264…" = "Converting to H.264…";
+"Convertendo %lld%%" = "Converting %lld%%";
+"Não consegui converter: %@" = "Couldn't convert: %@";
+"Não consegui abrir o servidor local" = "Couldn't start the local server";
+"O Chromecast recusou %@ (%lld)" = "The Chromecast refused %@ (%lld)";
+
+/* YouTube */
+"Abrindo o YouTube…" = "Opening YouTube…";
+"Enviando o vídeo…" = "Sending the video…";
+"Colocando a seguir…" = "Adding as next…";
+"Adicionando à fila…" = "Adding to queue…";
+"Vai tocar a seguir na TV." = "It'll play next on the TV.";
+"Adicionado à fila da TV." = "Added to the TV queue.";
+"O YouTube não respondeu no Chromecast" = "YouTube didn't respond on the Chromecast";
+"A sessão do YouTube expirou" = "The YouTube session expired";
+"YouTube recusou o pareamento" = "YouTube refused the pairing";
+"Não consegui abrir a sessão do YouTube" = "Couldn't open the YouTube session";
+"YouTube respondeu HTTP %lld" = "YouTube returned HTTP %lld";
+"YouTube respondeu HTTP %lld: %@" = "YouTube returned HTTP %lld: %@";
+
+/* Spotify / sites */
+"Spotify" = "Spotify";
+"Abri no navegador. Instale o app do Spotify para transmitir para a TV." = "Opened in the browser. Install the Spotify app to cast to the TV.";
+"Tocando no Spotify da TV." = "Playing on Spotify on the TV.";
+"Tocando no Spotify. Se não sair na TV, no app do Spotify toque em “Conectar a um dispositivo” e escolha %@ — é só uma vez." = "Playing in Spotify. If it doesn't come out of the TV, open Spotify, click “Connect to a device” and pick %@ — you only need to do it once.";
+"%@ usa proteção contra cópia (DRM) e só transmite pelo app oficial no celular." = "%@ uses copy protection (DRM) and only casts from its official phone app.";
+"Não achei vídeo nessa página. Com o yt-dlp instalado, centenas de sites passam a funcionar." = "No video found on this page. With yt-dlp installed, hundreds of sites start working.";
+"Não achei vídeo compatível nessa página." = "No compatible video on this page.";
+"Esse post pede login. Ative ⋯ → “Usar login do navegador” para o app usar a sua sessão do Instagram/X." = "This post needs you to be signed in. Turn on ⋯ → “Use browser sign-in” so the app can use your Instagram/X session.";
+"Mesmo com o login do navegador o post não abriu — confira se ele abre no navegador." = "Even with browser sign-in the post didn't open — check that it opens in your browser.";
+"O yt-dlp não conseguiu ler este site: %@. Às vezes resolve atualizando: brew upgrade yt-dlp" = "yt-dlp couldn't read this site: %@. Updating often fixes it: brew upgrade yt-dlp";
