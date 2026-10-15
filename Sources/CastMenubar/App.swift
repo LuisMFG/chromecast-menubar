@@ -1,7 +1,15 @@
 import SwiftUI
 
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// "Abrir com → Chromecast" no Finder
+    func application(_ application: NSApplication, open urls: [URL]) {
+        NotificationCenter.default.post(name: .castFiles, object: urls)
+    }
+}
+
 @main
 struct CastMenubarApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
     @StateObject private var store = CastStore()
 
     var body: some Scene {

@@ -122,6 +122,16 @@ final class CastChannel: @unchecked Sendable {
         c.start(queue: queue)
     }
 
+    /// IP local usado pra falar com o Chromecast (é o endereço que ele consegue alcançar de volta).
+    var localAddress: String? {
+        guard case let .hostPort(host, _)? = connection?.currentPath?.localEndpoint else { return nil }
+        switch host {
+        case .ipv4(let a): return "\(a)"
+        case .name(let n, _): return n
+        default: return nil
+        }
+    }
+
     func stop() {
         heartbeat?.cancel(); heartbeat = nil
         connection?.cancel(); connection = nil

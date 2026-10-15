@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 private let defaultTint = Color(red: 0.55, green: 0.55, blue: 1.0)
 
@@ -6,12 +7,23 @@ private let defaultTint = Color(red: 0.55, green: 0.55, blue: 1.0)
 
 struct RootView: View {
     @EnvironmentObject var store: CastStore
+    @State private var dropTargeted = false
 
     private var tint: Color { store.artworkTint ?? defaultTint }
 
     var body: some View {
         VStack(spacing: 16) {
             Header()
+            if let p = store.castProgress {
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text(p).font(.system(size: 11, weight: .medium))
+                    Spacer()
+                }
+                .padding(.horizontal, 12).frame(height: 34)
+                .background(RoundedRectangle(cornerRadius: 10).fill(tint.opacity(0.15)))
+                .transition(.move(edge: .top).combined(with: .opacity))
+            }
             if !store.connected {
                 Searching()
             } else if let media = store.media {
@@ -40,9 +52,46 @@ struct RootView: View {
             }
             .animation(.easeInOut(duration: 0.6), value: store.artworkTint)
         }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 14, style: .continuous)
+                    .strokeBorder(tint, style: StrokeStyle(lineWidth: 2, dash: [7, 5]))
+                    .background(RoundedRectangle(cornerRadius: 14, style: .continuous).fill(.black.opacity(0.55)))
+                    .overlay {
+                        VStack(spacing: 8) {
+                            Image(systemName: "tv.and.mediabox").font(.system(size: 30, weight: .light))
+                            Text("Solte para tocar na TV").font(.system(size: 13, weight: .semibold))
+                        }
+                        .foregroundStyle(tint)
+                    }
+                    .padding(8)
+                    .transition(.opacity)
+            }
+        }
+        .onDrop(of: [.fileURL, .url], isTargeted: $dropTargeted, perform: handleDrop)
+        .animation(.snappy, value: dropTargeted)
+        .animation(.snappy, value: store.castProgress)
         .environment(\.colorScheme, .dark)
         .tint(tint)
         .task { store.requestStatus() }
+    }
+}
+
+extension RootView {
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        guard let p = providers.first else { return false }
+        if p.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            p.loadItem(forTypeIdentifier: UTType.fileURL.identifier) { item, _ in
+                guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                Task { @MainActor in await store.cast(url) }
+            }
+            return true
+        }
+        _ = p.loadObject(ofClass: URL.self) { url, _ in
+            guard let url else { return }
+            Task { @MainActor in await store.cast(url) }
+        }
+        return true
     }
 }
 
@@ -461,6 +510,8 @@ private struct Footer: View {
     @State private var renaming = false
     @State private var newName = ""
     @State private var confirmReboot = false
+    @State private var askingLink = false
+    @State private var link = ""
 
     var body: some View {
         HStack(spacing: 6) {
@@ -482,6 +533,9 @@ private struct Footer: View {
             }
             .keyboardShortcut("r")
             Menu {
+                Button("Transmitir arquivo…") { pickFile() }
+                Button("Transmitir link…") { link = ""; askingLink = true }
+                Divider()
                 if store.isCasting { Button("Parar transmissão") { store.stopCasting() } }
                 Button("Renomear…") { newName = store.displayName; renaming = true }
                 Button("Reiniciar Chromecast…") { confirmReboot = true }
@@ -502,11 +556,30 @@ private struct Footer: View {
         } message: {
             Text("O novo nome aparece no celular, no Chrome e aqui.")
         }
+        .alert("Transmitir link", isPresented: $askingLink) {
+            TextField("https://…/video.mp4", text: $link)
+            Button("Cancelar", role: .cancel) {}
+            Button("Transmitir") {
+                if let url = URL(string: link.trimmingCharacters(in: .whitespaces)) { Task { await store.cast(url) } }
+            }
+        } message: {
+            Text("Link direto para vídeo, música, imagem ou HLS (.m3u8).")
+        }
         .confirmationDialog("Reiniciar o Chromecast?", isPresented: $confirmReboot) {
             Button("Reiniciar", role: .destructive) { store.reboot() }
             Button("Cancelar", role: .cancel) {}
         } message: {
             Text("A transmissão atual é interrompida e o aparelho volta em cerca de 1 minuto.")
+        }
+    }
+
+    private func pickFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.movie, .audio, .image]
+        panel.allowsMultipleSelection = false
+        NSApp.activate(ignoringOtherApps: true)
+        if panel.runModal() == .OK, let url = panel.url {
+            Task { await store.cast(url) }
         }
     }
 

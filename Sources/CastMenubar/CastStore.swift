@@ -64,6 +64,8 @@ final class CastStore: ObservableObject {
     @Published private(set) var artworkImage: NSImage?
     @Published var error: String?
     @Published var info: DeviceInfo?
+    /// Texto de progresso ao preparar uma transmissão ("Convertendo 40%", "Abrindo…")
+    @Published var castProgress: String?
 
     private var browser: NWBrowser?
     private var channel: CastChannel?
@@ -74,6 +76,8 @@ final class CastStore: ObservableObject {
     private var volumeTask: Task<Void, Never>?
     private var lastArtwork: URL?
     private var setupRequestId = 1
+    private var pendingLoad: [String: Any]?
+    static let defaultReceiver = "CC1AD845"
 
     // Timer de sono
     enum SleepMode: Equatable { case duration, endOfEpisode }
@@ -95,6 +99,10 @@ final class CastStore: ObservableObject {
     init() {
         startBrowsing()
         registerHotKeys()
+        NotificationCenter.default.addObserver(forName: .castFiles, object: nil, queue: .main) { [weak self] n in
+            guard let urls = n.object as? [URL], let url = urls.first else { return }
+            Task { @MainActor in await self?.cast(url) }
+        }
     }
 
     /// Store com dados fictícios, usado só pra gerar snapshots da interface.
@@ -257,6 +265,11 @@ final class CastStore: ObservableObject {
             mediaTransport = newApp.transportId
             send(to: newApp.transportId, ns: CastNS.connection, ["type": "CONNECT"])
             send(to: newApp.transportId, ns: CastNS.media, ["type": "GET_STATUS"])
+        }
+        if let load = pendingLoad, newApp.appId == Self.defaultReceiver, newApp.hasMedia {
+            pendingLoad = nil
+            send(to: newApp.transportId, ns: CastNS.media, load)
+            castProgress = nil
         } else if !newApp.hasMedia {
             mediaTransport = nil
             media = nil
@@ -367,6 +380,70 @@ final class CastStore: ObservableObject {
         setVolume(volume + direction * volumeStep)
         HUD.shared.show(symbol: volume == 0 ? "speaker.slash.fill" : "speaker.wave.3.fill",
                         title: "\(displayName) · \(Int((volume * 100).rounded()))%", level: volume)
+    }
+
+    // MARK: - Transmitir do Mac
+
+    /// Arquivo local ou link http(s). Vídeos fora do padrão da 1ª geração são convertidos antes.
+    func cast(_ url: URL) async {
+        guard connected else { error = String(localized: "Chromecast desconectado"); return }
+        if !url.isFileURL {
+            guard ["http", "https"].contains(url.scheme?.lowercased() ?? "") else { return }
+            return load(contentURL: url.absoluteString, mime: MediaServer.mime(for: url), title: url.lastPathComponent)
+        }
+        var file = url
+        let plan = await Transcoder.plan(for: url)
+        if plan != .direct {
+            castProgress = plan == .remux ? String(localized: "Preparando vídeo…") : String(localized: "Convertendo para H.264…")
+            do {
+                file = try await Transcoder.export(url, plan: plan) { p in
+                    Task { @MainActor [weak self] in
+                        guard plan == .transcode else { return }
+                        self?.castProgress = String(localized: "Convertendo \(Int(p * 100))%")
+                    }
+                }
+            } catch {
+                castProgress = nil
+                self.error = String(localized: "Não consegui converter: \(error.localizedDescription)")
+                return
+            }
+        }
+        guard let host = channel?.localAddress, let port = try? MediaServer.shared.start() else {
+            castProgress = nil
+            error = String(localized: "Não consegui abrir o servidor local")
+            return
+        }
+        let path = MediaServer.shared.publish(file: file)
+        load(contentURL: "http://\(host):\(port)\(path)", mime: MediaServer.mime(for: file),
+             title: url.deletingPathExtension().lastPathComponent)
+    }
+
+    /// Abre o player padrão do Chromecast (se preciso) e manda carregar a mídia.
+    private func load(contentURL: String, mime: String, title: String) {
+        let kind = mime.hasPrefix("image/") ? 4 : mime.hasPrefix("audio/") ? 3 : 0
+        let request: [String: Any] = [
+            "type": "LOAD",
+            "autoplay": true,
+            "currentTime": 0,
+            "media": [
+                "contentId": contentURL,
+                "contentType": mime,
+                "streamType": "BUFFERED",
+                "metadata": ["metadataType": kind, "title": title],
+            ],
+        ]
+        castProgress = String(localized: "Abrindo na TV…")
+        if let a = app, a.appId == Self.defaultReceiver, a.hasMedia {
+            send(to: a.transportId, ns: CastNS.media, request)
+            castProgress = nil
+        } else {
+            pendingLoad = request
+            send(to: "receiver-0", ns: CastNS.receiver, ["type": "LAUNCH", "appId": Self.defaultReceiver])
+            Task { [weak self] in   // não deixa o aviso preso se o aparelho não responder
+                try? await Task.sleep(for: .seconds(15))
+                if self?.pendingLoad != nil { self?.pendingLoad = nil; self?.castProgress = nil }
+            }
+        }
     }
 
     // MARK: - Timer de sono
@@ -518,6 +595,11 @@ final class CastStore: ObservableObject {
             }
         }
     }
+}
+
+extension Notification.Name {
+    /// Arquivos abertos pelo Finder ("Abrir com") para transmitir.
+    static let castFiles = Notification.Name("castFiles")
 }
 
 extension NSImage {
