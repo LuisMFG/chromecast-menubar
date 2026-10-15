@@ -28,15 +28,22 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, AVAssetWri
     private var readyFired = false
     private let width: Int
     private let height: Int
-    /// Segmentos de 2 s: com 1 s a 1ª geração alcança o "ao vivo" e fica parando pra carregar.
     let segmentSeconds: Double
     /// Quantos segmentos esperar antes de mandar a TV tocar (folga contra engasgos).
     let startAfter: Int
 
     let bitrate: Int
     let fps: Int
+    /// Onde o player começa em relação ao fim da playlist (negativo = segundos antes do "ao vivo").
+    var startOffset: Double? = nil
+    /// Mídia já produzida (segundos), pra medir o atraso.
+    private(set) var producedSeconds = 0.0
 
-    init(maxWidth: Int = 1280, segmentSeconds: Double = 2, startAfter: Int = 3, bitrate: Int = 3_500_000, fps: Int = 30) {
+    /// Medido na 1ª geração (atraso tela → TV): 2 s/3 seg. ≈ 7,7 s com engasgos · 1 s ≈ 4,9 s · 0,5 s + início a 1 s
+    /// do fim ≈ 4,3 s sem engasgos. O resto é o buffer interno do player do Chromecast.
+    init(maxWidth: Int = 1280, segmentSeconds: Double = 0.5, startAfter: Int = 3, bitrate: Int = 3_000_000, fps: Int = 30,
+         startOffset: Double? = -1) {
+        self.startOffset = startOffset
         self.bitrate = bitrate
         self.fps = fps
         self.segmentSeconds = segmentSeconds
@@ -233,7 +240,8 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, AVAssetWri
             MediaServer.shared.publish(data: data, path: Self.prefix + "/" + name, contentType: "video/iso.segment")
             let duration = report?.trackReports.first?.duration.seconds ?? 1
             segments.append((name, duration))
-            while segments.count > 10 {   // janela deslizante: libera memória dos antigos
+            producedSeconds += duration
+            while segments.count > 20 {   // janela deslizante: libera memória dos antigos
                 MediaServer.shared.unpublish(path: Self.prefix + "/" + segments.removeFirst().name)
             }
             publishPlaylist()
@@ -251,9 +259,10 @@ final class ScreenMirror: NSObject, SCStreamOutput, SCStreamDelegate, AVAssetWri
         #EXT-X-TARGETDURATION:\(max(target, 1))
         #EXT-X-MEDIA-SEQUENCE:\(sequence - segments.count + 1)
         #EXT-X-INDEPENDENT-SEGMENTS
-        #EXT-X-MAP:URI="init.mp4"
 
         """
+        if let startOffset { m3u8 += String(format: "#EXT-X-START:TIME-OFFSET=%.1f,PRECISE=YES\n", startOffset) }
+        m3u8 += "#EXT-X-MAP:URI=\"init.mp4\"\n"
         for seg in segments { m3u8 += String(format: "#EXTINF:%.3f,\n%@\n", seg.duration, seg.name) }
         MediaServer.shared.publish(data: Data(m3u8.utf8), path: playlistPath, contentType: "application/vnd.apple.mpegurl")
     }

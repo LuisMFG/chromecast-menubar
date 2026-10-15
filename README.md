@@ -24,7 +24,7 @@ Built for (and tested on) the **1st-generation Chromecast**, which still works f
 - **Spotify:** links play through the Spotify app on your Mac, which sends them to the TV via Spotify Connect.
 - **Instagram and X:** videos are resolved with [yt-dlp](https://github.com/yt-dlp/yt-dlp). X works without signing in; Instagram can use your browser session (opt-in).
 - **Files and links:** drop a video, song, photo or link on the panel, or use *Open With → Chromecast* in Finder. HEVC and 4K are converted to 1080p H.264 for the 1st-gen device.
-- **Mirror your Mac:** sends the screen (and optionally the audio) to the TV as live HLS, about 6–8 seconds behind.
+- **Mirror your Mac:** sends the screen (and optionally the audio) to the TV as live HLS, about 4 seconds behind.
 - **Now Playing and media keys:** ⏯ ⏮ ⏭ control the TV, and the macOS Now Playing widget shows artwork and progress. **⌃⌥↑ / ⌃⌥↓** change the TV volume with an on-screen HUD.
 - **Sleep timer:** 15m / 30m / 1h or *end of episode*. In the last minute the volume fades out, then casting stops and the volume goes back to where it was.
 - **TV dashboard:** a full-screen clock, date and weather when nothing is playing.
@@ -99,7 +99,7 @@ Mac menu bar app  ───▶ │ receiver   GET_STATUS · LAUNCH · STOP · SE
    Files      built-in HTTP server (Range) → Default Media Receiver (CC1AD845)
    Instagram/X  yt-dlp → direct MP4/HLS → Default Media Receiver
    Spotify    Spotify app on the Mac (AppleScript) → Spotify Connect → Spotify receiver (CC32E753)
-   Mirroring  ScreenCaptureKit → AVAssetWriter (2 s HLS fMP4 segments) → built-in server → LIVE HLS
+   Mirroring  ScreenCaptureKit → AVAssetWriter (0.5 s HLS fMP4 segments) → built-in server → LIVE HLS
 ```
 
 ## Reverse engineering with REA
