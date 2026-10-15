@@ -32,5 +32,9 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>NSBonjourServices</key><array><string>_googlecast._tcp</string></array>
 </dict></plist>
 PLIST
-codesign --force --sign - "$APP"
+# Assina com um certificado local fixo (ex.: "… Local Code Signing") se existir: assim o macOS
+# mantém as permissões (Rede Local, Automação, Keychain) entre atualizações. Sem ele, assinatura ad-hoc.
+IDENTITY="${CODESIGN_IDENTITY:-$(security find-identity -p codesigning 2>/dev/null | awk -F'"' '/Local Code Signing/{print $2; exit}')}"
+codesign --force --sign "${IDENTITY:--}" "$APP"
+echo "Assinado com: ${IDENTITY:-ad-hoc}"
 echo "Pronto: $APP"
