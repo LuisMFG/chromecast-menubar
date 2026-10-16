@@ -233,6 +233,10 @@ private struct Header: View {
             Menu {
                 Button("Transmitir arquivo…") { pickFile() }
                 Toggle("Usar login do navegador (Instagram e X)", isOn: $store.useBrowserLogin)
+                Picker("Espelhamento", selection: $store.mirrorLowLatency) {
+                    Text("Fluido (vídeos)").tag(false)
+                    Text("Atraso mínimo (apresentação)").tag(true)
+                }
                 Toggle("Som na TV ao espelhar", isOn: $store.mirrorAudio)
                 Toggle("Silenciar o Mac ao espelhar", isOn: $store.muteMacWhileMirroring)
                 Divider()
@@ -820,7 +824,8 @@ private struct MirrorActive: View {
                             .background(Capsule().fill(.red))
                         Text("Espelhando a tela").font(.system(size: 14, weight: .semibold))
                     }
-                    Text(store.mirrorInstant ? String(localized: "Modo instantâneo — quase sem atraso.")
+                    Text(store.mirrorInstant ? (store.mirrorLowLatency ? String(localized: "Atraso mínimo — uns 0,2 s.")
+                                                                       : String(localized: "Fluido — uns 0,4 s de atraso."))
                          : String(localized: "Modo compatível — alguns segundos de atraso."))
                         .font(.system(size: 11)).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

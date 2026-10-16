@@ -22,11 +22,16 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     static let receiverApp = "0F5096E8"
     static let namespace = "urn:x-cast:com.google.cast.webrtc"
 
+    /// Fluido: igual ao Chrome com a 1ª geração (1280×720, margem de 400 ms, keyframe raro).
+    /// Atraso mínimo: margem de 200 ms, pra apresentação.
+    enum Profile { case smooth, lowLatency }
+
     let width: Int
     let height: Int
     let fps = 30
-    let targetDelayMs = 200
-    let bitrate = 4_000_000
+    let targetDelayMs: Int
+    let bitrate: Int
+    let keyFrameSeconds: Int
     let withAudio: Bool
 
     var onError: ((String) -> Void)?
@@ -37,6 +42,10 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private(set) var keyframeRequests = 0
     private(set) var lastAckVideo: Int = -1
     private(set) var lastAckAudio: Int = -1
+    /// Log de eventos da TV (diagnóstico): atraso de exibição de cada quadro de vídeo, em ms.
+    private(set) var playoutDelays: [Int] = []
+    private(set) var decodedFrames = 0
+    var requestReceiverLog = ProcessInfo.processInfo.environment["CAST_RECEIVER_LOG"] != nil
 
     private let video = RtpStream(payloadType: 96, clockRate: 90_000)
     private let audio = RtpStream(payloadType: 127, clockRate: 48_000)
@@ -51,6 +60,10 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var patternTimer: DispatchSourceTimer?
 
     private var forceKeyFrame = true
+    /// Pacotes de vídeo esperando saída espaçada (pacing).
+    private var outbox: [Data] = []
+    private var draining = false
+    private let packetsPerMs = 3                 // ~30 Mbit/s de pico: um keyframe sai em dezenas de ms, não num pico só
     private let clockStart = CMClockGetTime(CMClockGetHostTimeClock())
     private var lastPixelBuffer: CVPixelBuffer?
     private var lastFrameAt = Date.distantPast
@@ -61,11 +74,22 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
     private var rmsWindow: [Float] = []
     private var lastLevelLog = Date()
 
-    init(maxWidth: Int = 1280, withAudio: Bool = true) {
-        let screen = NSScreen.main?.frame.size ?? CGSize(width: 1440, height: 900)
-        let w = min(maxWidth, Int(screen.width))
-        width = w / 2 * 2
-        height = min(Int(Double(w) * screen.height / screen.width), 800) / 2 * 2
+    init(profile: Profile = .smooth, withAudio: Bool = true) {
+        switch profile {
+        case .smooth:
+            width = 1280; height = 720          // formato nativo da TV (a tela do Mac entra com faixas, sem distorcer)
+            targetDelayMs = 400
+            bitrate = 5_000_000
+            keyFrameSeconds = 10                // keyframes são grandes; a TV pede um (PLI) se precisar
+        case .lowLatency:
+            let screen = NSScreen.main?.frame.size ?? CGSize(width: 1440, height: 900)
+            let w = min(1280, Int(screen.width))
+            width = w / 2 * 2
+            height = min(Int(Double(w) * screen.height / screen.width), 800) / 2 * 2
+            targetDelayMs = 200
+            bitrate = 4_000_000
+            keyFrameSeconds = 2
+        }
         self.withAudio = withAudio
     }
 
@@ -78,7 +102,7 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             "rtpPayloadType": Int(video.payloadType), "ssrc": Int(video.ssrc), "targetDelay": targetDelayMs,
             "aesKey": video.key.hex, "aesIvMask": video.ivMask.hex,
             "timeBase": "1/90000", "maxFrameRate": "\(fps * 1000)/1000", "maxBitRate": bitrate,
-            "resolutions": [["width": width, "height": height]], "receiverRtcpEventLog": false,
+            "resolutions": [["width": width, "height": height]], "receiverRtcpEventLog": requestReceiverLog,
         ]]
         if withAudio {
             streams.append([
@@ -118,6 +142,7 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             self.encoder = nil
             self.opus = nil
             self.udp?.cancel(); self.udp = nil
+            self.outbox.removeAll()
             self.video.history.removeAll(); self.audio.history.removeAll()
         }
     }
@@ -137,6 +162,7 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         cfg.pixelFormat = kCVPixelFormatType_420YpCbCr8BiPlanarVideoRange
         cfg.showsCursor = true
         cfg.queueDepth = 4
+        cfg.preservesAspectRatio = true          // 16:10 dentro de 16:9 com faixas, sem esticar
         cfg.capturesAudio = opus != nil
         cfg.excludesCurrentProcessAudio = true
         cfg.sampleRate = 48_000
@@ -193,10 +219,15 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             let base = CVPixelBufferGetBaseAddress(pb)!.assumingMemoryBound(to: UInt32.self)
             let stride = CVPixelBufferGetBytesPerRow(pb) / 4
             let bar = (n * 16) % self.width
+            let noisy = ProcessInfo.processInfo.environment["CAST_TEST_NOISE"] != nil
+            var seed = UInt32(truncatingIfNeeded: n &* 2_654_435_761)
             for y in 0..<self.height {
                 let row = base + y * stride
                 let color = UInt32(0xFF00_0000) | UInt32((y * 255 / self.height) << 8) | UInt32((n * 3) % 255)
-                for x in 0..<self.width { row[x] = abs(x - bar) < 30 ? 0xFFFF_FFFF : color | UInt32(x * 255 / self.width) << 16 }
+                for x in 0..<self.width {
+                    if noisy, x % 8 == 0 { seed = seed &* 1_664_525 &+ 1_013_904_223 }
+                    row[x] = noisy ? (0xFF00_0000 | (seed >> 8)) : (abs(x - bar) < 30 ? 0xFFFF_FFFF : color | UInt32(x * 255 / self.width) << 16)
+                }
             }
             CVPixelBufferUnlockBaseAddress(pb, [])
             self.lastPixelBuffer = pb
@@ -234,8 +265,8 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             kVTCompressionPropertyKey_AllowFrameReordering: false,          // sem quadros B: menos atraso
             kVTCompressionPropertyKey_AverageBitRate: bitrate,
             kVTCompressionPropertyKey_ExpectedFrameRate: fps,
-            kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * 2,        // keyframe de segurança a cada 2 s
-            kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: 2,
+            kVTCompressionPropertyKey_MaxKeyFrameInterval: fps * keyFrameSeconds,
+            kVTCompressionPropertyKey_MaxKeyFrameIntervalDuration: keyFrameSeconds,
         ]
         for (k, v) in props { VTSessionSetProperty(session, key: k, value: v as CFTypeRef) }
         VTCompressionSessionPrepareToEncodeFrames(session)
@@ -356,7 +387,25 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
         let packets = s.packetize(s.crypt(frame, frameId: id), frameId: id, isKey: isKey, rtpTime: rtpTime)
         s.history[UInt8(truncatingIfNeeded: id)] = packets
         s.history.removeValue(forKey: UInt8(truncatingIfNeeded: id &- 100))
-        for p in packets { udp?.send(content: p, completion: .idempotent) }
+        if s === audio {
+            for p in packets { udp?.send(content: p, completion: .idempotent) }   // áudio é pequeno: sai na hora
+        } else {
+            outbox.append(contentsOf: packets)
+            drainOutbox()
+        }
+    }
+
+    /// Solta poucos pacotes por milissegundo em vez de despejar o quadro inteiro de uma vez.
+    private func drainOutbox() {
+        guard !draining else { return }
+        draining = true
+        func step() {
+            let n = min(packetsPerMs, outbox.count)
+            for p in outbox.prefix(n) { udp?.send(content: p, completion: .idempotent) }
+            outbox.removeFirst(n)
+            if outbox.isEmpty { draining = false } else { queue.asyncAfter(deadline: .now() + .milliseconds(1), execute: step) }
+        }
+        step()
     }
 
     // MARK: - RTCP
@@ -390,7 +439,11 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
             let fmt = b[i] & 0x1F, pt = b[i + 1]
             let len = (Int(b[i + 2]) << 8 | Int(b[i + 3]) + 1) * 4
             guard len > 0, i + len <= b.count else { return }
-            if pt == 206, len >= 12 {
+            // APP "CAST" subtipo 2 = log de eventos do receptor (só quando pedido na oferta)
+            if pt == 204, fmt == 2, len >= 16, b[i + 8] == 0x43, b[i + 9] == 0x41, b[i + 10] == 0x53, b[i + 11] == 0x54 {
+                parseReceiverLog(Array(b[(i + 16)..<(i + len)]))
+            }
+                        if pt == 206, len >= 12 {
                 let media = UInt32(b[i + 8]) << 24 | UInt32(b[i + 9]) << 16 | UInt32(b[i + 10]) << 8 | UInt32(b[i + 11])
                 let s = media == audio.ssrc ? audio : video
                 if fmt == 1, s === video { forceKeyFrame = true; keyframeRequests += 1 }       // PLI
@@ -405,6 +458,23 @@ final class CastStreamer: NSObject, SCStreamOutput, SCStreamDelegate, @unchecked
                 }
             }
             i += len
+        }
+    }
+
+    /// Por quadro: [rtp 32] [nº eventos-1 8 | base ms 24] e eventos [valor 16][tipo 4 | delta ms 12].
+    /// Tipos no fio: 11 ack enviado, 12 exibido (valor = atraso em ms), 13 decodificado, 14 pacote recebido.
+    private func parseReceiverLog(_ b: [UInt8]) {
+        var j = 0
+        while j + 8 <= b.count {
+            let events = Int(b[j + 4]) + 1
+            j += 8
+            for _ in 0..<events where j + 4 <= b.count {
+                let value = Int16(bitPattern: UInt16(b[j]) << 8 | UInt16(b[j + 1]))
+                let type = b[j + 2] >> 4
+                if type == 12 { playoutDelays.append(Int(value)) }
+                if type == 13 { decodedFrames += 1 }
+                j += 4
+            }
         }
     }
 

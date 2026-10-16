@@ -76,6 +76,11 @@
 "Dica: arraste um arquivo ou link pra cá, ou use ⌃⌥T no navegador." = "Tip: drop a file or link here, or press ⌃⌥T in your browser.";
 
 /* Espelhar */
+"Espelhamento" = "Mirroring";
+"Fluido (vídeos)" = "Smooth (videos)";
+"Atraso mínimo (apresentação)" = "Lowest delay (presentations)";
+"Atraso mínimo — uns 0,2 s." = "Lowest delay — about 0.2 s.";
+"Fluido — uns 0,4 s de atraso." = "Smooth — about 0.4 s behind.";
 "Som na TV ao espelhar" = "Sound on the TV when mirroring";
 "Silenciar o Mac ao espelhar" = "Mute the Mac while mirroring";
 "Som na TV — o Mac fica mudo até parar." = "Sound on the TV — the Mac stays muted until you stop.";

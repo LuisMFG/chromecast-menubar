@@ -110,6 +110,10 @@ final class CastStore: ObservableObject {
     @Published var muteMacWhileMirroring = UserDefaults.standard.object(forKey: "muteMac") as? Bool ?? true {
         didSet { UserDefaults.standard.set(muteMacWhileMirroring, forKey: "muteMac") }
     }
+    /// Perfil do espelhamento: fluido (vídeos) ou atraso mínimo (apresentação).
+    @Published var mirrorLowLatency = UserDefaults.standard.bool(forKey: "mirrorLowLatency") {
+        didSet { UserDefaults.standard.set(mirrorLowLatency, forKey: "mirrorLowLatency") }
+    }
     /// A TV aceitou o fluxo de áudio nesta sessão.
     @Published private(set) var mirrorHasAudio = false
     private var mirror: ScreenMirror?
@@ -855,7 +859,7 @@ final class CastStore: ObservableObject {
         }
         needsRelaunchForScreen = false
         if dashboardOn { endDashboard() }
-        let st = CastStreamer(withAudio: mirrorAudio)
+        let st = CastStreamer(profile: mirrorLowLatency ? .lowLatency : .smooth, withAudio: mirrorAudio)
         st.onError = { [weak self] message in
             Task { @MainActor in
                 log.error("mirror: captura parou: \(message, privacy: .public)")
