@@ -38,6 +38,9 @@ struct Service {
         colors: [Color(red: 0.98, green: 0.76, blue: 0.2), Color(red: 0.93, green: 0.18, blue: 0.45), Color(red: 0.55, green: 0.24, blue: 0.85)],
         startPoint: .bottomLeading, endPoint: .topTrailing)))
     static let x = Service(name: "X", symbol: "xmark", fill: AnyShapeStyle(Color.black))
+    static let stremio = Service(name: "Stremio", symbol: "play.fill", fill: AnyShapeStyle(LinearGradient(
+        colors: [Color(red: 0.48, green: 0.31, blue: 0.85), Color(red: 0.31, green: 0.2, blue: 0.62)],
+        startPoint: .topLeading, endPoint: .bottomTrailing)))
     static let file = Service(name: String(localized: "Arquivo"), symbol: "doc.fill", fill: AnyShapeStyle(Color.white.opacity(0.15)))
     static let web = Service(name: "Web", symbol: "globe", fill: AnyShapeStyle(Color.white.opacity(0.15)))
 }
@@ -107,6 +110,8 @@ struct RootView: View {
             store.requestStatus()
             await store.refreshBrowserTab()
         }
+        .onAppear { store.watchStremio(true) }
+        .onDisappear { store.watchStremio(false) }
     }
 
     private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
@@ -371,6 +376,9 @@ private struct SendBar: View {
             .overlay(RoundedRectangle(cornerRadius: 11, style: .continuous)
                 .stroke(focused ? tint.opacity(0.6) : .white.opacity(0.06)))
 
+            if let now = store.stremioNow {
+                StremioRow(now: now, tint: tint)
+            }
             if let tab = store.browserTab {
                 BrowserTabRow(tab: tab, tint: tint)
             }
@@ -392,6 +400,32 @@ private struct SendBar: View {
             return
         }
         Task { await store.cast(url) }
+    }
+}
+
+private struct StremioRow: View {
+    @EnvironmentObject var store: CastStore
+    let now: StremioNow
+    let tint: Color
+
+    var body: some View {
+        HStack(spacing: 10) {
+            ServiceIcon(service: .stremio)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Tocando no Stremio").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                Text(now.title).font(.system(size: 12, weight: .medium)).lineLimit(1)
+            }
+            Spacer(minLength: 4)
+            Button { Task { await store.castStremio() } } label: {
+                Text("Transmitir").font(.system(size: 11, weight: .bold)).foregroundStyle(.black)
+                    .padding(.horizontal, 11).frame(height: 26)
+                    .background(Capsule().fill(tint))
+            }
+            .buttonStyle(.plain)
+            .help(String(localized: "Manda o vídeo pra TV, convertido pelo Stremio — bem mais liso que espelhar"))
+        }
+        .padding(.horizontal, 10).padding(.vertical, 8)
+        .background(RoundedRectangle(cornerRadius: 11, style: .continuous).fill(.white.opacity(0.05)))
     }
 }
 

@@ -23,6 +23,7 @@ Feito para o **Chromecast de 1ª geração** (e testado nele), que continua func
 - **YouTube:** abre no app do YouTube da TV, com **tocar a seguir**, **adicionar à fila** e **próximo**. Aceita `watch`, `youtu.be`, `shorts`, `live`, playlists e `t=`.
 - **Spotify:** o link toca pelo app do Spotify no Mac, que manda pra TV via Spotify Connect.
 - **Instagram e X:** os vídeos são resolvidos com o [yt-dlp](https://github.com/yt-dlp/yt-dlp). O X funciona sem login; o Instagram pode usar a sessão do seu navegador (opcional).
+- **Stremio → TV:** enquanto o Stremio toca algo, o painel mostra com um botão **Transmitir**; a TV toca o stream original convertido pelo servidor do próprio Stremio (H.264/AAC), liso e com avanço/retrocesso — sem espelhar. Com o Stremio aberto, arquivos MKV/AVI/HEVC do Mac passam pelo mesmo conversor.
 - **Arquivos e links:** solte vídeo, música, foto ou link no painel, ou use *Abrir com → Chromecast* no Finder. HEVC e 4K são convertidos pra 1080p H.264 pra 1ª geração.
 - **Espelhar o Mac, na hora:** usa o Cast Streaming (o mesmo protocolo do "transmitir aba" do Chrome) com RTP H.264 + Opus criptografado. Fica uns 0,2–0,3 s atrás, com som na TV (o Mac fica mudo enquanto espelha e volta depois). Se um receptor recusar, cai para HLS ao vivo (~4 s).
 - **Tocando Agora e teclas de mídia:** ⏯ ⏮ ⏭ controlam a TV, e o widget do macOS mostra capa e progresso. **⌃⌥↑ / ⌃⌥↓** mudam o volume da TV, com aviso na tela.
@@ -102,6 +103,8 @@ A API de gerenciamento do aparelho foi encontrada rodando o [REA](https://github
 - O app não chama mais a antiga API HTTP da porta 8008. Ele tunela as mesmas rotas (`eureka_info`, `set_eureka_info`, `reboot`, `multizone/*`, `assistant/*`…) por um namespace do Cast, o **`urn:x-cast:com.google.cast.setup`**.
 - O formato foi confirmado no aparelho só com leituras: `{"type": "<rota>", "request_id": n, "data": {…}}` → `{"response_code": 200, "data": …}`. No firmware 1.56 ele responde sem token de autorização.
 - O `E8C28D3C` (app Backdrop) aparece no código do Google Home e bate com o que o aparelho informa quando está ocioso.
+
+O mesmo método mapeou o servidor de streaming local do **Stremio** (`server.js`): o `/stats.json` diz o que está tocando e o `/hlsv2/<sessão>/master.m3u8?mediaURL=…&videoCodecs=h264&audioCodecs=aac` converte pra 1ª geração.
 
 Detalhes, incluindo o que foi testado e o que não foi, em [REA-FINDINGS.md](REA-FINDINGS.md).
 

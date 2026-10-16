@@ -42,6 +42,9 @@
 "A transmissão atual é interrompida e o aparelho volta em cerca de 1 minuto." = "Whatever is playing stops and the device is back in about a minute.";
 
 /* Enviar */
+"Tocando no Stremio" = "Playing in Stremio";
+"Manda o vídeo pra TV, convertido pelo Stremio — bem mais liso que espelhar" = "Sends the video to the TV, converted by Stremio — much smoother than mirroring";
+"Mandei pra TV — pode pausar o Stremio no Mac." = "Sent to the TV — you can pause Stremio on the Mac.";
 "Cole um link pra transmitir" = "Paste a link to cast";
 "Colar" = "Paste";
 "Colar o link copiado e transmitir" = "Paste the copied link and cast it";

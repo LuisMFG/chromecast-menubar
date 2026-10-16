@@ -95,6 +95,9 @@ final class CastStore: ObservableObject {
     }
     private var noticeClear: Task<Void, Never>?
     @Published var browserTab: BrowserTab?
+    /// O que está tocando no Stremio agora (aparece no painel com "Transmitir").
+    @Published private(set) var stremioNow: StremioNow?
+    private var stremioTask: Task<Void, Never>?
     /// Deixa o yt-dlp usar a sessão do navegador (Instagram/X). Desligado por padrão.
     @Published var useBrowserLogin = UserDefaults.standard.bool(forKey: "useBrowserLogin") {
         didSet { UserDefaults.standard.set(useBrowserLogin, forKey: "useBrowserLogin") }
@@ -667,6 +670,39 @@ final class CastStore: ObservableObject {
     func refreshBrowserTab() async {
         guard !isPreview else { return }
         browserTab = await tabs.activeTab()
+        await refreshStremio()
+    }
+
+    // MARK: Stremio
+
+    func refreshStremio() async {
+        guard !isPreview else { return }
+        guard StremioBridge.isRunning, let port = await StremioBridge.serverPort() else { stremioNow = nil; return }
+        stremioNow = await StremioBridge.nowPlaying(port: port)
+    }
+
+    /// Enquanto o painel está aberto, confere o Stremio a cada 4 s.
+    func watchStremio(_ on: Bool) {
+        stremioTask?.cancel()
+        guard on, !isPreview else { return }
+        stremioTask = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshStremio()
+                try? await Task.sleep(for: .seconds(4))
+            }
+        }
+    }
+
+    /// Manda o que está tocando no Stremio pra TV, convertido pelo próprio Stremio (H.264/AAC).
+    func castStremio() async {
+        guard connected, let now = stremioNow, let port = await StremioBridge.serverPort(),
+              let host = channel?.localAddress else { return }
+        if mirroring { endMirroring() }
+        if dashboardOn { endDashboard() }
+        let url = StremioBridge.hlsURL(host: host, port: port, mediaURL: "http://127.0.0.1:\(port)/\(now.infoHash)/\(now.fileIndex)")
+        log.notice("stremio: \(now.title, privacy: .public)")
+        load(contentURL: url, mime: "application/x-mpegurl", title: now.title, fmp4: true)
+        notice = String(localized: "Mandei pra TV — pode pausar o Stremio no Mac.")
     }
 
     /// "Vídeo X - YouTube" → "Vídeo X"
@@ -719,6 +755,14 @@ final class CastStore: ObservableObject {
     private func castFile(_ url: URL) async {
         var file = url
         let plan = await Transcoder.plan(for: url)
+        // Stremio aberto: ele converte em tempo real (inclusive MKV, que o AVFoundation nem abre)
+        let ext = url.pathExtension.lowercased()
+        if (plan == .transcode || ["mkv", "avi", "wmv", "flv", "ts", "m2ts", "mpg", "mpeg"].contains(ext)),
+           StremioBridge.isRunning, let port = await StremioBridge.serverPort(), let host = channel?.localAddress {
+            load(contentURL: StremioBridge.hlsURL(host: host, port: port, mediaURL: url.absoluteString),
+                 mime: "application/x-mpegurl", title: url.deletingPathExtension().lastPathComponent, fmp4: true)
+            return
+        }
         if plan != .direct {
             castProgress = plan == .remux ? String(localized: "Preparando vídeo…") : String(localized: "Convertendo para H.264…")
             do {

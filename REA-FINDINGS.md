@@ -67,3 +67,32 @@ No firmware 1.56 o canal responde **sem** `cast_local_authorization_token`.
 
 `set_eureka_info {"name": …}` (renomear) e `reboot {"params": "now"}` (reiniciar) seguem o mesmo formato;
 não foram executados durante a análise porque alteram o aparelho.
+
+## Stremio 5.1.26 (macOS) com REA — "Stremio → TV"
+
+Alvo: `Stremio_arm64.dmg` (sha256 `f85286f2…46fbb4`), assinado e notarizado pela West Bridge Ltd (BH62GT22G7).
+O app é um shell nativo (Qt + libmpv + ffmpeg) que roda um servidor de streaming em Node: `Contents/MacOS/server.js`
+(webpack, 6,6 MB). `rea analyze-javascript-application` no `server.js` reconstruiu a tabela de rotas.
+
+| Rota | Uso |
+|---|---|
+| `GET /stats.json` | torrents ativos por `infoHash`: `name`, `files`, `peers`, `downloadSpeed`… |
+| `GET /<infoHash>/<idx>/stats.json` | idem para um arquivo, com `streamProgress` |
+| `GET /<infoHash>/<idx>` | o arquivo do torrent, direto |
+| `/hlsv2/<sessão>/master.m3u8?mediaURL=…` | conversão HLS fMP4 com o ffmpeg embutido |
+| `/hlsv2/<sessão>/destroy` | encerra a conversão |
+| `/<infoHash>/<idx>/hls.m3u8` | atalho: monta o `master.m3u8` do arquivo do torrent |
+
+Parâmetros do `/hlsv2` lidos do código: `mediaURL`, `videoCodecs`, `audioCodecs`, `maxAudioChannels`, `maxWidth`,
+`forceTranscoding`, `profile`. `mediaURL` aceita `http(s)://` e `file://`.
+
+- O servidor escuta em todas as interfaces (`server.listen(port)`, porta 11470 → 11474 se ocupada), então a TV o alcança.
+- O CORS geral só libera `localhost`/`peario.xyz`, mas o `/hlsv2` respondeu `Access-Control-Allow-Origin: *` mesmo com
+  `Origin: https://www.gstatic.com` (o player do Chromecast) — não precisou de proxy.
+
+### Confirmado no aparelho
+
+Um MKV gerado com HEVC 1080p + AC3 5.1 (o que a 1ª geração não toca) pedido com
+`videoCodecs=h264&audioCodecs=aac&maxAudioChannels=2&maxWidth=1920` e carregado no Default Media Receiver com
+`hlsSegmentFormat: fmp4` tocou do início ao fim em `PLAYING`, com o tempo avançando no ritmo do relógio e sem
+nenhum `BUFFERING` depois do início (~8 s até começar).

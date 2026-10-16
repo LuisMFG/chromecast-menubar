@@ -23,6 +23,7 @@ Built for (and tested on) the **1st-generation Chromecast**, which still works f
 - **YouTube:** plays in the YouTube app on the TV, with **play next**, **add to queue** and **skip**. Supports `watch`, `youtu.be`, `shorts`, `live`, playlists and `t=`.
 - **Spotify:** links play through the Spotify app on your Mac, which sends them to the TV via Spotify Connect.
 - **Instagram and X:** videos are resolved with [yt-dlp](https://github.com/yt-dlp/yt-dlp). X works without signing in; Instagram can use your browser session (opt-in).
+- **Stremio → TV:** while Stremio plays something, the panel shows it with a **Cast** button; the TV plays the original stream converted by Stremio's own server (H.264/AAC), smooth and seekable — no mirroring. With Stremio open, MKV/AVI/HEVC files from the Mac go through the same converter.
 - **Files and links:** drop a video, song, photo or link on the panel, or use *Open With → Chromecast* in Finder. HEVC and 4K are converted to 1080p H.264 for the 1st-gen device.
 - **Mirror your Mac, instantly:** uses Cast Streaming (the same protocol Chrome uses for tab casting) with encrypted H.264 + Opus RTP. About 0.2–0.3 s behind, with sound on the TV (the Mac is muted while mirroring, then restored). Falls back to live HLS (~4 s) if a receiver refuses the offer.
 - **Now Playing and media keys:** ⏯ ⏮ ⏭ control the TV, and the macOS Now Playing widget shows artwork and progress. **⌃⌥↑ / ⌃⌥↓** change the TV volume with an on-screen HUD.
@@ -111,6 +112,8 @@ The device-management API was found by running [REA](https://github.com/morluto/
 - The message format was confirmed on the device using read-only calls: `{"type": "<route>", "request_id": n, "data": {…}}` → `{"response_code": 200, "data": …}`. On firmware 1.56 it answers without an authorization token.
 - `E8C28D3C` (the Backdrop app) appears in the Google Home code and matches what the device reports when idle.
 
+The same approach mapped **Stremio**'s local streaming server (`server.js`): `/stats.json` tells what is playing and `/hlsv2/<session>/master.m3u8?mediaURL=…&videoCodecs=h264&audioCodecs=aac` converts it for the 1st-gen device.
+
 Details, including what was tested and what wasn't, are in [REA-FINDINGS.md](REA-FINDINGS.md) (in Portuguese).
 
 ## Limitations
@@ -129,6 +132,7 @@ Sources/CastMenubar/
 ├── CastStore.swift      # discovery, connection lifecycle, receiver/media state, commands
 ├── YouTube.swift        # link parsing + YouTube Lounge API session (play/next/queue)
 ├── Resolver.swift       # link → YouTube / Spotify / direct media / page video / yt-dlp
+├── StremioBridge.swift  # what Stremio is playing + its HLS converter
 ├── BrowserTabs.swift    # active tab of Brave, Chrome, Arc, Edge, Vivaldi, Safari
 ├── MediaServer.swift    # tiny HTTP server with Range + CORS
 ├── Transcoder.swift     # HEVC/4K → 1080p H.264 for the 1st-gen device
