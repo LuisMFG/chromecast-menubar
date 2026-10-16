@@ -28,7 +28,7 @@ Built for (and tested on) the **1st-generation Chromecast**, which still works f
 - **Now Playing and media keys:** ⏯ ⏮ ⏭ control the TV, and the macOS Now Playing widget shows artwork and progress. **⌃⌥↑ / ⌃⌥↓** change the TV volume with an on-screen HUD.
 - **Sleep timer:** 15m / 30m / 1h or *end of episode*. In the last minute the volume fades out, then casting stops and the volume goes back to where it was.
 - **TV dashboard:** a full-screen clock, date and weather when nothing is playing.
-- **Turn on TV:** wakes the TV and switches input over HDMI-CEC.
+- **Turn on TV** (menu): wakes the TV and switches input over HDMI-CEC. Needs the Chromecast on wall power (not the TV's USB port) and a TV with CEC.
 - **Device menu:** rename or restart the Chromecast; firmware and Wi-Fi signal in the footer.
 - **Stays connected:** heartbeat watchdog, exponential backoff, reconnect on wake and network changes, and a fallback to the last known IP when Bonjour misses the device.
 - **English and Portuguese**, following your system language.

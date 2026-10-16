@@ -28,7 +28,7 @@ Feito para o **Chromecast de 1ª geração** (e testado nele), que continua func
 - **Tocando Agora e teclas de mídia:** ⏯ ⏮ ⏭ controlam a TV, e o widget do macOS mostra capa e progresso. **⌃⌥↑ / ⌃⌥↓** mudam o volume da TV, com aviso na tela.
 - **Timer de sono:** 15m / 30m / 1h ou *fim do episódio*. No último minuto o volume abaixa aos poucos; depois a transmissão para e o volume volta ao que era.
 - **Painel na TV:** relógio, data e clima em tela cheia quando nada está tocando.
-- **Ligar TV:** liga a TV e troca a entrada via HDMI-CEC.
+- **Ligar TV** (menu): liga a TV e troca a entrada via HDMI-CEC. Precisa do Chromecast na tomada (não na USB da TV) e de uma TV com CEC.
 - **Menu do aparelho:** renomear ou reiniciar o Chromecast; firmware e sinal do Wi-Fi no rodapé.
 - **Conexão que se recupera sozinha:** vigia de heartbeat, novas tentativas espaçadas, reconexão quando o Mac acorda ou a rede muda, e o último IP como plano B quando o Bonjour falha.
 - **Português e inglês**, conforme o idioma do sistema.

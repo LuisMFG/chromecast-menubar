@@ -325,7 +325,8 @@ final class CastStore: ObservableObject {
         guard device != nil else { return }
         reconnecting = true
         if attempt >= 4 {
-            error = String(localized: "Não consegui falar com o Chromecast. Ele está ligado e na mesma rede?")
+            // o caso mais comum: o Chromecast é alimentado pela USB da TV e desligou junto com ela
+            error = String(localized: "O Chromecast não está respondendo — se ele está na USB da TV, desliga junto com ela. Ligue a TV e o app reconecta sozinho.")
         }
         guard reconnectTask == nil else { return }       // não empilha tentativas
         let delay = immediately ? 0.2 : min(pow(2, Double(attempt)), 15) * Double.random(in: 0.8...1.2)

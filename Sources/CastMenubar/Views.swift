@@ -236,6 +236,8 @@ private struct Header: View {
                 Toggle("Som na TV ao espelhar", isOn: $store.mirrorAudio)
                 Toggle("Silenciar o Mac ao espelhar", isOn: $store.muteMacWhileMirroring)
                 Divider()
+                Button("Ligar TV (HDMI-CEC)") { store.turnOnTV() }
+                    .help(String(localized: "Só funciona com o Chromecast na tomada e a TV com HDMI-CEC"))
                 Button("Renomear…") { newName = store.displayName; renaming = true }
                 Button("Reiniciar Chromecast…") { confirmReboot = true }
                 Button("Reconectar") { store.reconnectNow() }
@@ -655,8 +657,6 @@ private struct IdleHome: View {
             HStack(spacing: 8) {
                 Tile(symbol: "rectangle.3.group", title: String(localized: "Painel"), tint: tint, action: store.startDashboard)
                     .help(String(localized: "Relógio e clima na TV"))
-                Tile(symbol: "power", title: String(localized: "Ligar TV"), tint: tint, action: store.turnOnTV)
-                    .help(String(localized: "Liga a TV e troca a entrada (HDMI-CEC)"))
                 Tile(symbol: "folder", title: String(localized: "Arquivo"), tint: tint, action: pickFile)
                     .help(String(localized: "Vídeo, música ou foto do Mac"))
                 Tile(symbol: "rectangle.on.rectangle", title: String(localized: "Espelhar"), tint: tint) {

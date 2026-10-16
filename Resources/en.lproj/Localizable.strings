@@ -18,6 +18,9 @@
 "Conectando ao %@…" = "Connecting to %@…";
 "Se nada aparecer, libere o app em Ajustes do Sistema → Privacidade e Segurança → Rede Local." = "If nothing shows up, allow the app in System Settings → Privacy & Security → Local Network.";
 "Tentar agora" = "Try now";
+"O Chromecast não está respondendo — se ele está na USB da TV, desliga junto com ela. Ligue a TV e o app reconecta sozinho." = "The Chromecast isn't responding — if it's powered by the TV's USB port, it turns off with the TV. Turn the TV on and the app reconnects by itself.";
+"Ligar TV (HDMI-CEC)" = "Turn on TV (HDMI-CEC)";
+"Só funciona com o Chromecast na tomada e a TV com HDMI-CEC" = "Only works with the Chromecast on wall power and a TV with HDMI-CEC";
 "Não consegui falar com o Chromecast. Ele está ligado e na mesma rede?" = "Couldn't reach the Chromecast. Is it on and on the same network?";
 "Chromecast desconectado" = "Chromecast disconnected";
 
